@@ -98,6 +98,7 @@
 #define OP_31_XOP_STWX      151
 #define OP_31_XOP_STDUX     181
 #define OP_31_XOP_STWUX     183
+#define OP_31_XOP_MSGSND    206
 #define OP_31_XOP_STBX      215
 #define OP_31_XOP_LBZUX     119
 #define OP_31_XOP_STBUX     247
@@ -105,6 +106,8 @@
 #define OP_31_XOP_LHZUX     311
 #define OP_31_XOP_MSGSNDP   142
 #define OP_31_XOP_MSGCLRP   174
+#define OP_31_XOP_MSGCLR    238
+#define OP_31_XOP_TLBIE     306
 #define OP_31_XOP_MFSPR     339
 #define OP_31_XOP_LWAX      341
 #define OP_31_XOP_LHAX      343
@@ -123,11 +126,20 @@
 #define OP_31_XOP_STFSUX    695
 #define OP_31_XOP_STFDX     727
 #define OP_31_XOP_STFDUX    759
+#define OP_31_XOP_LWZCIX    789
 #define OP_31_XOP_LHBRX     790
+#define OP_31_XOP_LHZCIX    821
+#define OP_31_XOP_LBZCIX    853
 #define OP_31_XOP_LFIWAX    855
+#define OP_31_XOP_LDCIX     885
+#define OP_31_XOP_MSGSYNC   886
 #define OP_31_XOP_LFIWZX    887
+#define OP_31_XOP_STWCIX    917
 #define OP_31_XOP_STHBRX    918
+#define OP_31_XOP_STHCIX    949
+#define OP_31_XOP_STBCIX    981
 #define OP_31_XOP_STFIWX    983
+#define OP_31_XOP_STDCIX   1013
 
 /* VSX Scalar Load Instructions */
 #define OP_31_XOP_LXSDX         588
@@ -205,6 +217,7 @@
 #define PPC_INST_DCBA_MASK		0xfc0007fe
 #define PPC_INST_DCBAL			0x7c2005ec
 #define PPC_INST_DCBZL			0x7c2007ec
+#define PPC_INST_HRFID			0x4c000224
 #define PPC_INST_ICBT			0x7c00002c
 #define PPC_INST_ICSWX			0x7c00032d
 #define PPC_INST_ICSWEPX		0x7c00076d

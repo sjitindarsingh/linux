@@ -73,6 +73,7 @@
 #include <asm/opal.h>
 #include <asm/xics.h>
 #include <asm/xive.h>
+#include <asm/kvm_book3s_hv_nest.h>
 
 #include "book3s.h"
 
@@ -1235,12 +1236,35 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			vcpu->arch.last_inst = kvmppc_need_byteswap(vcpu) ?
 				swab32(vcpu->arch.emul_inst) :
 				vcpu->arch.emul_inst;
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		if (nested && vcpu->arch.shregs.msr & HSRR1_HV_PRIV) {
+			/*
+			 * Tried to execute hypervisor privileged instruction
+			 * or mtspr/mfspr on a hypervisor privileged SPR while
+			 * MSR(HV | PR) == 0b00 -> Privileged but !HV state
+			 */
+
+			r = kvmppc_emulate_priv(run, vcpu,
+						vcpu->arch.last_inst);
+			if (r == EMULATE_FAIL) {
+				pr_err("KVM: Couldn't emulate instruction 0x%.8x\n",
+				       vcpu->arch.last_inst);
+				kvmppc_dump_regs(vcpu);
+				kvmppc_core_queue_program(vcpu, SRR1_PROGPRIV);
+			}
+			r = RESUME_GUEST;
+		} else
+#endif
 		if (vcpu->guest_debug & KVM_GUESTDBG_USE_SW_BP) {
 			/* Need vcore unlocked to call kvmppc_get_last_inst */
 			spin_unlock(&vcpu->arch.vcore->lock);
 			r = kvmppc_emulate_debug_inst(run, vcpu);
 			spin_lock(&vcpu->arch.vcore->lock);
 		} else {
+			if (!nested && vcpu->arch.shregs.msr & HSRR1_HV_PRIV) {
+				pr_err("KVM: Trying to run nested guest but nesting disabled\n");
+				pr_err("KVM: Try \"echo Y > /sys/module/kvm_hv/parameters/nested\"\n");
+			}
 			kvmppc_core_queue_program(vcpu, SRR1_PROGILL);
 			r = RESUME_GUEST;
 		}

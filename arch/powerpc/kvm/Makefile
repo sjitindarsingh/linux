@@ -80,6 +80,9 @@ kvm-hv-y += \
 kvm-hv-$(CONFIG_PPC_TRANSACTIONAL_MEM) += \
 	book3s_hv_tm.o
 
+kvm-hv-$(CONFIG_KVM_BOOK3S_64_HV_NEST) += \
+	book3s_hv_nest.o
+
 kvm-book3s_64-builtin-xics-objs-$(CONFIG_KVM_XICS) := \
 	book3s_hv_rm_xics.o book3s_hv_rm_xive.o
 
