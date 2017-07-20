@@ -1368,14 +1368,20 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 	ld	r8, VCPU_GPR(R8)(r9)
 #endif
 
-	/* Save HEIR (HV emulation assist reg) in emul_inst
-	   if this is an HEI (HV emulation interrupt, e40) */
+	/*
+	 * Save HEIR (HV emulation assist reg) in emul_inst, HSRR0 in pc and
+	 * HSRR1 in msr if this is an HEAI (HV emulation assist interrupt, e40)
+	 */
 	li	r3,KVM_INST_FETCH_FAILED
 	stw	r3,VCPU_LAST_INST(r9)
 	cmpwi	r12,BOOK3S_INTERRUPT_H_EMUL_ASSIST
 	bne	11f
-	mfspr	r3,SPRN_HEIR
-11:	stw	r3,VCPU_HEIR(r9)
+	mfspr	r10,SPRN_HSRR0
+	mfspr	r11,SPRN_HSRR1
+	mfspr	r3, SPRN_HEIR
+	std     r10,VCPU_PC(r9)
+	std	r11,VCPU_MSR(r9)
+11:	stw	r3, VCPU_HEIR(r9)
 
 	/* these are volatile across C function calls */
 #ifdef CONFIG_RELOCATABLE
