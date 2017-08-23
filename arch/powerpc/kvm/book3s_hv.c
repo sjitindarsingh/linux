@@ -4554,7 +4554,8 @@ static int kvmppc_book3s_init_hv(void)
 	 * indirectly, via OPAL.
 	 */
 #ifdef CONFIG_SMP
-	if (!xive_enabled() && !local_paca->kvm_hstate.xics_phys) {
+	if (!xive_enabled() && !local_paca->kvm_hstate.xics_phys &&
+	    !cpu_has_feature(CPU_FTR_NESTED_HV)) {
 		struct device_node *np;
 
 		np = of_find_compatible_node(NULL, NULL, "ibm,opal-intc");
