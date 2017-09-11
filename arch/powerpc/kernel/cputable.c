@@ -2232,6 +2232,8 @@ static struct cpu_spec * __init setup_cpu_spec(unsigned long offset,
 		}
 	}
 
+	t->cpu_features |= old.cpu_features & CPU_FTR_NESTED_HV;
+
 	*PTRRELOC(&cur_cpu_spec) = &the_cpu_spec;
 
 	/*
