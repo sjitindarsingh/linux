@@ -48,6 +48,9 @@ config KVM_BOOK3S_PR_POSSIBLE
 config KVM_BOOK3S_HV_POSSIBLE
 	bool
 
+config KVM_BOOK3S_HV_NEST_POSSIBLE
+	bool
+
 config KVM_BOOK3S_32
 	tristate "KVM support for PowerPC book3s_32 processors"
 	depends on PPC_BOOK3S_32 && !SMP && !PTE_64BIT
@@ -97,6 +100,20 @@ config KVM_BOOK3S_64_HV
 	  that KVM is not usable under PowerVM (pHyp), is only usable
 	  on POWER7 or later processors, and cannot emulate a
 	  different processor from the host processor.
+
+	  If unsure, say N.
+
+config KVM_BOOK3S_64_HV_NEST
+	tristate "KVM support for running nested hypervisors below this hypervisor"
+	depends on KVM_BOOK3S_64_HV
+	select KVM_BOOK3S_HV_NEST_POSSIBLE
+	---help---
+	  Support running nested hypervisors below this hypervisor. That is
+	  guests of this hypervisor will be able to use the KVM_HV module and
+	  themselves run guests.
+
+	  If you only want to run one level of guests below this hypervisor,
+	  with no further nesting, then you do not need this option.
 
 	  If unsure, say N.
 
