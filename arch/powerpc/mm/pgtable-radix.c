@@ -642,7 +642,8 @@ void __init radix__early_init_mmu(void)
 	__pmd_frag_nr = RADIX_PMD_FRAG_NR;
 	__pmd_frag_size_shift = RADIX_PMD_FRAG_SIZE_SHIFT;
 
-	if (!firmware_has_feature(FW_FEATURE_LPAR)) {
+	if (cpu_has_feature(CPU_FTR_NESTED_HV) ||
+	    !firmware_has_feature(FW_FEATURE_LPAR)) {
 		radix_init_native();
 		if (cpu_has_feature(CPU_FTR_POWER9_DD1))
 			update_hid_for_radix();
@@ -670,7 +671,8 @@ void radix__early_init_mmu_secondary(void)
 	/*
 	 * update partition table control register and UPRT
 	 */
-	if (!firmware_has_feature(FW_FEATURE_LPAR)) {
+	if (cpu_has_feature(CPU_FTR_NESTED_HV) ||
+	    !firmware_has_feature(FW_FEATURE_LPAR)) {
 
 		if (cpu_has_feature(CPU_FTR_POWER9_DD1))
 			update_hid_for_radix();
@@ -693,7 +695,8 @@ void radix__mmu_cleanup_all(void)
 {
 	unsigned long lpcr;
 
-	if (!firmware_has_feature(FW_FEATURE_LPAR)) {
+	if (cpu_has_feature(CPU_FTR_NESTED_HV) ||
+	    !firmware_has_feature(FW_FEATURE_LPAR)) {
 		lpcr = mfspr(SPRN_LPCR);
 		mtspr(SPRN_LPCR, lpcr & ~LPCR_UPRT);
 		mtspr(SPRN_PTCR, 0);

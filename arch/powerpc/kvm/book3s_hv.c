@@ -4100,7 +4100,8 @@ static int kvmppc_core_emulate_mfspr_hv(struct kvm_vcpu *vcpu, int sprn,
 
 static int kvmppc_core_check_processor_compat_hv(void)
 {
-	if (!cpu_has_feature(CPU_FTR_HVMODE) ||
+	if ((!cpu_has_feature(CPU_FTR_HVMODE) &&
+	     !cpu_has_feature(CPU_FTR_NESTED_HV)) ||
 	    !cpu_has_feature(CPU_FTR_ARCH_206))
 		return -EIO;
 

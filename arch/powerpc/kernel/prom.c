@@ -436,6 +436,14 @@ static int __init early_init_dt_scan_chosen_ppc(unsigned long node,
 		crashk_res.end = crashk_res.start + *lprop - 1;
 #endif
 
+#ifdef CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE
+	lprop = of_get_flat_dt_prop(node, "qemu,nested", NULL);
+	if (lprop) {
+		cur_cpu_spec->cpu_features |= CPU_FTR_NESTED_HV;
+		printk(KERN_EMERG "Running as nested HV\n");
+	}
+#endif
+
 	/* break now */
 	return 1;
 }

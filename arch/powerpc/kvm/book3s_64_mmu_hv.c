@@ -269,7 +269,8 @@ int kvmppc_mmu_hv_init(void)
 {
 	unsigned long host_lpid, rsvd_lpid;
 
-	if (!cpu_has_feature(CPU_FTR_HVMODE))
+	if (!cpu_has_feature(CPU_FTR_HVMODE) &&
+	    !cpu_has_feature(CPU_FTR_NESTED_HV))
 		return -EINVAL;
 
 	if (!mmu_has_feature(MMU_FTR_LOCKLESS_TLBIE))
