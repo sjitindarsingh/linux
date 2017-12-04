@@ -1340,9 +1340,12 @@ static void kvmppc_set_lpcr(struct kvm_vcpu *vcpu, u64 new_lpcr,
 	/*
 	 * On POWER9, allow userspace to enable large decrementer for the
 	 * guest, whether or not the host has it enabled.
+	 * Also allow userspace to enable enhanced virtualisation.
 	 */
-	if (cpu_has_feature(CPU_FTR_ARCH_300))
-		mask |= LPCR_LD;
+	if (cpu_has_feature(CPU_FTR_ARCH_300)) {
+		mask |= LPCR_LD | LPCR_EVIRT;
+	}
+
 
 	/* Broken 32-bit version of LPCR must not clear top bits */
 	if (preserve_top32)
