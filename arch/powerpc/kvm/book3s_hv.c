@@ -117,6 +117,36 @@ module_param_cb(h_ipi_redirect, &module_param_ops, &h_ipi_redirect, 0644);
 MODULE_PARM_DESC(h_ipi_redirect, "Redirect H_IPI wakeup to a free host core");
 #endif
 
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+static bool nested = false;
+
+static int param_set_nested_kvm(const char *val, const struct kernel_param *kp)
+{
+	bool enable;
+	int rc = strtobool(val, &enable);
+
+	if (rc) {
+		return rc;
+	}
+
+	if (enable && !radix_enabled()) {
+		pr_err("KVM: Nested KVM only available in radix mode\n");
+		return -EINVAL;
+	}
+
+	*((bool *)kp->arg) = enable;
+	return 0;
+}
+
+static struct kernel_param_ops nested_kvm_ops = {
+	.set = param_set_nested_kvm,
+	.get = param_get_bool,
+};
+
+module_param_cb(nested, &nested_kvm_ops, &nested, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(nested, "Enable/Disable Nested KVM (only on POWER9)");
+#endif
+
 /* If set, the threads on each CPU core have to be in the same MMU mode */
 static bool no_mixing_hpt_and_radix;
 
