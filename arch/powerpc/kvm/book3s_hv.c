@@ -2103,6 +2103,10 @@ static struct kvm_vcpu *kvmppc_core_vcpu_create_hv(struct kvm *kvm,
 
 	kvmppc_mmu_book3s_hv_init(vcpu);
 
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	kvmppc_vcpu_nested_init(vcpu);
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
+
 	vcpu->arch.state = KVMPPC_VCPU_NOTREADY;
 
 	init_waitqueue_head(&vcpu->arch.cpu_run);
@@ -4059,6 +4063,9 @@ static int kvmppc_core_init_vm_hv(struct kvm *kvm)
 			return ret;
 		}
 		kvmppc_setup_partition_table(kvm);
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		kvmppc_init_vm_hv_nest(kvm);
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 	}
 
 	kvm->arch.lpcr = lpcr;
@@ -4133,9 +4140,12 @@ static void kvmppc_core_destroy_vm_hv(struct kvm *kvm)
 
 	kvmppc_free_lpid(kvm->arch.lpid);
 
-	if (kvm_is_radix(kvm))
+	if (kvm_is_radix(kvm)) {
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		kvmppc_destroy_vm_hv_nest(kvm);
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 		kvmppc_free_radix(kvm);
-	else
+	} else
 		kvmppc_free_hpt(&kvm->arch.hpt);
 
 	kvmppc_free_pimap(kvm);

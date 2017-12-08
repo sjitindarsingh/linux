@@ -304,6 +304,10 @@ struct kvm_arch {
 	struct kvmppc_passthru_irqmap *pimap;
 #endif
 	struct kvmppc_ops *kvm_ops;
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	u64 ptcr;			/* Partition Table Control Register */
+	struct list_head nested;	/* Per Nested Guest Information */
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
 	/* This array can grow quite large, keep it at the end */
 	struct kvmppc_vcore *vcores[KVM_MAX_VCORES];
@@ -790,6 +794,11 @@ struct kvm_vcpu_arch {
 	struct dentry *debugfs_dir;
 	struct dentry *debugfs_timings;
 #endif /* CONFIG_KVM_BOOK3S_HV_EXIT_TIMING */
+
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	unsigned int shadow_lpid;
+	struct kvm_arch_nested *cur_nest;	/* Nested guest, or NULL */
+#endif
 };
 
 #define VCPU_FPR(vcpu, i)	(vcpu)->arch.fp.fpr[i][TS_FPROFFSET]

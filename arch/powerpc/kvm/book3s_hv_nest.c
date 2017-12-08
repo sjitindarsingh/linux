@@ -19,6 +19,10 @@
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s_hv_nest.h>
 
+void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
+{
+}
+
 static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				     unsigned int instr)
 {
@@ -204,4 +208,13 @@ int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	}
 
 	return rc;
+}
+
+void kvmppc_init_vm_hv_nest(struct kvm *kvm)
+{
+	INIT_LIST_HEAD(&kvm->arch.nested);
+}
+
+void kvmppc_destroy_vm_hv_nest(struct kvm *kvm)
+{
 }
