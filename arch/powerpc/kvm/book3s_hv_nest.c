@@ -19,6 +19,8 @@
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s_hv_nest.h>
 
+#undef DEBUG
+
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
 {
 }
@@ -77,6 +79,11 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	}
 
+#ifdef DEBUG
+	if (rc == EMULATE_FAIL)
+		pr_info("%s: mtspr %d,0x%.16lx\n", __func__, sprn, vcpu->arch.gpr[rs]);
+#endif
+
 	return rc;
 }
 
@@ -124,6 +131,11 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	}
 
+#ifdef DEBUG
+	if (rc == EMULATE_FAIL)
+		pr_info("%s: mfspr %d\n", __func__, sprn);
+#endif
+
 	return rc;
 }
 
@@ -160,6 +172,11 @@ static int kvmppc_emulate_priv_op_31(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	}
 
+#ifdef DEBUG
+	if (rc == EMULATE_FAIL)
+		pr_info("%s: op_31: 0x%.8x\n", __func__, get_xop(instr));
+#endif
+
 	return rc;
 }
 
@@ -175,6 +192,11 @@ static int kvmppc_emulate_priv_op(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	default:
 		break;
 	}
+
+#ifdef DEBUG
+	if (rc == EMULATE_FAIL)
+		pr_info("%s: op: 0x%.8x\n", __func__, instr);
+#endif
 
 	return rc;
 }
