@@ -68,6 +68,23 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* XXX TODO */
 		break;
 	case SPRN_LPCR:
+		{
+			u64 mask = kvmppc_get_lpcr_mask();
+
+			if (!(val & LPCR_HR)) {
+				/* We only support radix nested guests */
+				pr_err("KVM: nested HV running hpt guest\n");
+				break;
+			}
+
+			/* Only use userspace settable bits of lpcr */
+			vcpu->arch.hv_regs.lpcr.val = vcpu->arch.vcore->lpcr
+						      & ~mask;
+			vcpu->arch.hv_regs.lpcr.val |= (mask & val);
+			vcpu->arch.hv_regs.lpcr.inited = 1;
+			rc = EMULATE_DONE;
+			break;
+		}
 	case SPRN_LPID:
 	case SPRN_HMER:
 	case SPRN_HMEER:
@@ -130,6 +147,10 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* XXX TODO */
 		break;
 	case SPRN_LPCR:
+		*val = vcpu->arch.hv_regs.lpcr.inited ?
+		       vcpu->arch.hv_regs.lpcr.val : vcpu->arch.vcore->lpcr;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_LPID:
 	case SPRN_HMER:
 	case SPRN_HMEER:

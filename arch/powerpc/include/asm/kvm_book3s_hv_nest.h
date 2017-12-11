@@ -14,10 +14,22 @@
 
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 
+struct hv_reg {
+	ulong val;
+	bool inited;
+};
+
 /* Registers required to run a nested hypervisor */
 struct kvm_arch_nested_hv_regs {
+	/* HV registers we purely emulate */
 	ulong hsprg0;
 	ulong hsprg1;
+	/*
+	 * HV registers we only use the nested value of when actually entering
+	 * the nested guest because they'd modify L1 behaviour if updated
+	 * immediately.
+	 */
+	struct hv_reg lpcr;
 };
 
 struct kvm_arch_nested {
