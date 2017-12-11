@@ -18,11 +18,219 @@
 #include <asm/disassemble.h>
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s_hv_nest.h>
+#include <asm/book3s/64/mmu.h>
 
 #undef DEBUG
 
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
 {
+}
+
+/* If nested != NULL -> must be called with nested->lock held */
+static int kvmppc_find_update_process_table(struct kvm *kvm,
+					    struct kvm_arch_nested *nested)
+{
+	u64 ptcr = kvm->arch.ptcr;
+	struct patb_entry patbe;
+	unsigned int lpid;
+	u64 patb0, patb1;
+	int rc;
+
+	lpid = nested ? nested->shadow_lpid : 0;
+
+	/* Check partition table big enough to contain that lpid entry */
+	if ((lpid * sizeof(patbe)) >= (1 << ((ptcr & PATS_MASK) + 12))) {
+		return -EINVAL;
+	}
+	/* Read the partition table entry from guest memory */
+	rc = kvm_read_guest(kvm, (ptcr & PATB_MASK) +
+				 (lpid * sizeof(patbe)),
+			    &patbe, sizeof(patbe));
+	if (rc < 0) {
+		pr_err("KVM: Unable to access guest partition table\n");
+		return rc;
+	}
+	patb0 = be64_to_cpu(patbe.patb0);
+	patb1 = be64_to_cpu(patbe.patb1);
+	/* If the guest doesn't think it's radix we're a bit stuffed */
+	if (!(patb0 & PATB_HR)) {
+		pr_err("KVM: Invalid entry in guest partition table\n");
+		return -EINVAL;
+	}
+	/* Process table size field must be reasonable, i.e. <= 24 */
+	if ((patb1 & PRTS_MASK) > 24) {
+		pr_err("KVM: Invalid entry in guest partition table\n");
+		return -EINVAL;
+	}
+
+	if (lpid) {
+		/* XXX TODO */
+		return -EINVAL;
+	} else {
+		if (patb1) {
+			struct prtb_entry prtbe;
+
+			rc = kvm_read_guest(kvm, (patb1 & PRTB_MASK),
+					    &prtbe, sizeof(prtbe));
+			if (rc < 0) {
+				pr_err("KVM: Unable to access guest process table\n");
+				return -EINVAL;
+			}
+			/*
+			 * Partition scoped translation for lpid 0 is provided
+			 * for the sole purpose of translating the address of
+			 * process table entries to remove the requirement for
+			 * the process table to be in contiguous memory. We
+			 * don't support that case and so expect to find the
+			 * guest kernels linear mapping, the same as should be
+			 * in the guests process table entry for pid 0. If
+			 * these don't point to the same radix tree then
+			 * there's not much we can do -> print an error message
+			 */
+			if ((be64_to_cpu(prtbe.prtb0) & RPDB_MASK) !=
+			    (patb0 & RPDB_MASK)) {
+				pr_err("KVM: Unable to handle guest process table translation\n");
+				return -EINVAL;
+			}
+		}
+
+		kvm->arch.process_table = patb1;
+		kvmppc_setup_partition_table(kvm);
+	}
+
+#ifdef DEBUG
+	pr_info("%s: lpid: %d, process table: 0x%.16llx\n", __func__, lpid,
+		patb1);
+#endif
+	return 0;
+}
+
+static inline int get_ric(unsigned int instr)
+{
+	return (instr >> 18) & 0x3;
+}
+
+static inline int get_prs(unsigned int instr)
+{
+	return (instr >> 17) & 0x1;
+}
+
+static inline int get_r(unsigned int instr)
+{
+	return (instr >> 16) & 0x1;
+}
+
+static inline int get_lpid(unsigned long r_val)
+{
+	return r_val & 0xffffffff;
+}
+
+static inline int get_is(unsigned long r_val)
+{
+	return (r_val >> 10) & 0x3;
+}
+
+static inline int get_ap(unsigned long r_val)
+{
+	return (r_val >> 5) & 0x7;
+}
+
+static inline long get_epn(unsigned long r_val)
+{
+	return r_val >> 12;
+}
+
+static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
+{
+	int rc = 0;
+	int rs, rb;
+	int ric, prs, r, is, ap = 0;
+	int lpid;
+	long epn = 0;
+
+	rs = get_rs(instr);
+	rb = get_rb(instr);
+
+	ric = get_ric(instr);
+	prs = get_prs(instr);
+	r = get_r(instr);
+	lpid = get_lpid(vcpu->arch.gpr[rs]);
+	is = get_is(vcpu->arch.gpr[rb]);
+	if (!is) {
+		epn = get_epn(vcpu->arch.gpr[rb]);
+		ap = get_ap(vcpu->arch.gpr[rb]);
+	}
+
+#ifdef DEBUG
+	pr_info("%s: lpid: %d ric: %d prs: %d r: %d is: %d epn: 0x%.16lx ap: %d\n",
+		__func__, lpid, ric, prs, r, is, epn, ap);
+#endif
+
+	/*
+	 * These cases should have resulted in a machine check.
+	 * prs == 1 -> Not HV privileged -> Shouldn't have caused interrupt
+	 * ric == 3 -> No cluster bombs for radix
+	 * (!is) && (ric == 1 || ric == 2) -> Not Supported by ISA
+	 * is == 1 -> Partition scoped translations not associated with pid
+	 */
+	if (prs || (ric == 3) || ((!is) && (ric == 1 || ric == 2)) || (is == 1)) {
+		WARN(1, "KVM: Invalid tlbie instruction form\n");
+		return EMULATE_FAIL;
+	}
+
+	switch (is) {
+	case 0: /* Invalidate target address TLB entry (we know ric == 0) */
+		/* XXX TODO */
+		return EMULATE_FAIL;
+	case 2:	/* Invalidate matching lpid */
+		if (lpid) {
+			/* XXX TODO */
+			return EMULATE_FAIL;
+		}
+
+		switch (ric) {
+		case 2:
+			/*
+			 * Invalidate caching of partition table entries ->
+			 * The guest process table location (stored in the
+			 * parition table) may have changed, go find it again.
+			 */
+			rc = kvmppc_find_update_process_table(&vcpu->kvm, NULL);
+			if (rc) {
+				return EMULATE_FAIL;
+			}
+		case 0:
+			/*
+			 * Invalidate TLB -> invalidate our shadow page table
+			 * Note: No shadow page table for lpid == 0
+			 */
+			if (lpid) {
+				/* XXX TODO */
+				return EMULATE_FAIL;
+			}
+		case 1:
+			/*
+			 * Invalidate Page Walk Cache
+			 * Currently we don't perform any caching of the page
+			 * walk itself, just the resulting translation which
+			 * would also have needed to be invalidated (with a tlb
+			 * invalidation) if it had changed (and thus would have
+			 * been handled in one of the above two cases)
+			 * -> thus nothing to do
+			 */
+			break;
+		default:
+			break;
+		}
+		break;
+	case 3: /* Invalidate all entries */
+		/* XXX TODO */
+		return EMULATE_FAIL;
+	default:
+		return EMULATE_FAIL;
+	}
+
+	return EMULATE_DONE;
 }
 
 static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
@@ -193,7 +401,7 @@ static int kvmppc_emulate_priv_op_31(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* XXX TODO */
 		break;
 	case OP_31_XOP_TLBIE:
-		/* XXX TODO */
+		rc = kvmppc_emulate_priv_tlbie(vcpu, instr);
 		break;
 	case OP_31_XOP_LWZCIX:
 	case OP_31_XOP_LHZCIX:

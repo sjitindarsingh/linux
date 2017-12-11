@@ -45,6 +45,10 @@ struct patb_entry {
 };
 extern struct patb_entry *partition_tb;
 
+/* Bits in PTCR */
+#define PATB_MASK      0x0ffffffffffff000UL
+#define PATS_MASK      0x1f
+
 /* Bits in patb0 field */
 #define PATB_HR		(1UL << 63)
 #define RPDB_MASK	0x0fffffffffffff00UL
