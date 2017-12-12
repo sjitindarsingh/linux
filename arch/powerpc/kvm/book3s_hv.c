@@ -4582,6 +4582,10 @@ static int kvmppc_book3s_init_hv(void)
 
 	if (kvmppc_radix_possible())
 		r = kvmppc_radix_init();
+	else if (cpu_has_feature(CPU_FTR_NESTED_HV)) {
+		pr_err("KVM-HV: Nested KVM only available in radix mmu mode\n");
+		return -ENODEV;
+	}
 
 	/*
 	 * POWER9 chips before version 2.02 can't have some threads in
