@@ -294,6 +294,9 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			break;
 		}
 	case SPRN_LPID:
+		vcpu->arch.shadow_lpid = val;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HMER:
 	case SPRN_HMEER:
 	case SPRN_PCR:
@@ -368,6 +371,9 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_LPID:
+		*val = vcpu->arch.shadow_lpid;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HMER:
 	case SPRN_HMEER:
 	case SPRN_PCR:
