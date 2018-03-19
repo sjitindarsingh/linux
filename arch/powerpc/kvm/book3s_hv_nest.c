@@ -26,6 +26,35 @@ void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
 {
 }
 
+static struct kvm_arch_nested *kvmppc_find_nested(struct kvm *kvm,
+						  int lpid)
+{
+	struct kvm_arch_nested *cur, *n;
+
+	list_for_each_entry_safe(cur, n, &kvm->arch.nested, list) {
+		if (cur->shadow_lpid == lpid) {
+			return cur;
+		}
+	}
+
+	return NULL;
+}
+
+/* Must be called with nested lock held */
+static void kvmppc_setup_partition_table_nested(struct kvm_arch_nested *nested)
+{
+	unsigned long dw0, dw1;
+
+	dw0 = PATB_HR | radix__get_tree_size() | __pa(nested->shadow_pgtable) |
+	      RADIX_PGD_INDEX_SIZE;
+	dw1 = PATB_GR | nested->process_table;
+
+	WARN(!nested->lpid,
+	     "KVM: Setting LPID 0 partition table entry in nest code\n");
+
+	mmu_partition_table_set_entry(nested->lpid, dw0, dw1);
+}
+
 /* If nested != NULL -> must be called with nested->lock held */
 static int kvmppc_find_update_process_table(struct kvm *kvm,
 					    struct kvm_arch_nested *nested)
@@ -64,8 +93,15 @@ static int kvmppc_find_update_process_table(struct kvm *kvm,
 	}
 
 	if (lpid) {
-		/* XXX TODO */
-		return -EINVAL;
+		nested->process_table = patb1;
+		if (nested->lpid) {
+			/*
+			 * Have we allocated an lpid for this nested guest yet?
+			 * If not then the partition table setup will be done
+			 * when allocating the lpid.
+			 */
+			kvmppc_setup_partition_table_nested(nested);
+		}
 	} else {
 		if (patb1) {
 			struct prtb_entry prtbe;
@@ -183,21 +219,31 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 		/* XXX TODO */
 		return EMULATE_FAIL;
 	case 2:	/* Invalidate matching lpid */
-		if (lpid) {
-			/* XXX TODO */
-			return EMULATE_FAIL;
-		}
-
 		switch (ric) {
 		case 2:
 			/*
 			 * Invalidate caching of partition table entries ->
-			 * The guest process table location (stored in the
-			 * parition table) may have changed, go find it again.
+			 * DW0 -> Not cached (looked up when needed)
+			 * DW1 -> Guest process table location (stored in the
+			 * parition table) may have changed -> zero it so it
+			 * gets looked up again on guest entry. OR go and find
+			 * it now for LPID 0.
 			 */
-			rc = kvmppc_find_update_process_table(&vcpu->kvm, NULL);
-			if (rc) {
-				return EMULATE_FAIL;
+			if (lpid) {
+				struct kvm_arch_nested *nested;
+				nested = kvmppc_find_nested(vcpu->kvm, lpid);
+
+				if (nested) {
+					mutex_lock(&nested->lock);
+					nested->process_table = 0ULL;
+					mutex_unlock(&nested->lock);
+				}
+			} else {
+				rc = kvmppc_find_update_process_table(vcpu->kvm,
+								      NULL);
+				if (rc) {
+					return EMULATE_FAIL;
+				}
 			}
 		case 0:
 			/*
@@ -205,8 +251,14 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 			 * Note: No shadow page table for lpid == 0
 			 */
 			if (lpid) {
-				/* XXX TODO */
-				return EMULATE_FAIL;
+				struct kvm_arch_nested *nested;
+				nested = kvmppc_find_nested(vcpu->kvm, lpid);
+
+				/* Nothing to do if haven't alloced pgtable */
+				if (nested && nested->shadow_pgtable) {
+					/* XXX TODO */
+					return EMULATE_FAIL;
+				}
 			}
 		case 1:
 			/*
