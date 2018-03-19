@@ -301,9 +301,21 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case SPRN_RPR:
 	case SPRN_CIABR:
 	case SPRN_DAWRX:
-	case SPRN_HFSCR:
 		/* XXX TODO */
 		break;
+	case SPRN_HFSCR:
+		{
+			/* Facility enable/disable is HFSCR[55:0] */
+			ulong mask = (1ULL << 56) - 1;
+
+			/* Don't allow enabling disabled facilities */
+			val = (vcpu->arch.hfscr & mask & val) | (~mask & val);
+
+			vcpu->arch.hv_regs.hfscr.val = val;
+			vcpu->arch.hv_regs.hfscr.inited = 1;
+			rc = EMULATE_DONE;
+			break;
+		}
 	case SPRN_TBWL:
 	case SPRN_TBWU:
 	case SPRN_TBU40:
@@ -398,8 +410,12 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case SPRN_RPR:
 	case SPRN_CIABR:
 	case SPRN_DAWRX:
-	case SPRN_HFSCR:
 		/* XXX TODO */
+		break;
+	case SPRN_HFSCR:
+		*val = vcpu->arch.hv_regs.hfscr.inited ?
+		       vcpu->arch.hv_regs.hfscr.val : vcpu->arch.hfscr;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_HSPRG0:
 		*val = vcpu->arch.hv_regs.hsprg0;
