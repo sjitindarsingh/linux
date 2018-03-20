@@ -376,7 +376,14 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_HMER:
 	case SPRN_HMEER:
+		/* XXX TODO */
+		break;
 	case SPRN_PCR:
+		/* Don't allow enabling disabled facilities */
+		vcpu->arch.hv_regs.pcr.val = val | vcpu->arch.vcore->pcr;
+		vcpu->arch.hv_regs.pcr.inited = 1;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HEIR:
 		/* XXX TODO */
 		break;
@@ -462,7 +469,13 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_HMER:
 	case SPRN_HMEER:
+		/* XXX TODO */
+		break;
 	case SPRN_PCR:
+		*val = vcpu->arch.hv_regs.pcr.inited ?
+		       vcpu->arch.hv_regs.pcr.val : vcpu->arch.vcore->pcr;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HEIR:
 		/* XXX TODO */
 		break;
