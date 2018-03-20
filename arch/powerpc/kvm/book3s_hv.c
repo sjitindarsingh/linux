@@ -422,7 +422,7 @@ static int kvmppc_set_arch_compat(struct kvm_vcpu *vcpu, u32 arch_compat)
 	return 0;
 }
 
-static void kvmppc_dump_regs(struct kvm_vcpu *vcpu)
+void kvmppc_dump_regs(struct kvm_vcpu *vcpu)
 {
 	int r;
 
@@ -1144,6 +1144,11 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	}
 	run->exit_reason = KVM_EXIT_UNKNOWN;
 	run->ready_for_interrupt_injection = 1;
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	if (vcpu->arch.cur_nest) {
+		return kvmppc_handle_trap_nested(run, vcpu, tsk);
+	}
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 	switch (vcpu->arch.trap) {
 	/* We're good on these - the host merely wanted to get our attention */
 	case BOOK3S_INTERRUPT_HV_DECREMENTER:

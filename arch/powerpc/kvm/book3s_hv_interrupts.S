@@ -110,14 +110,24 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 31:
 
 	/*
-	 * Put whatever is in the decrementer into the
-	 * hypervisor decrementer.
+	 * Put the lower of the decrementer and the guest hdec into the
+	 * hypervisor decrementer
 	 */
 BEGIN_FTR_SECTION
 	ld	r5, HSTATE_KVM_VCORE(r13)
 	ld	r6, VCORE_KVM(r5)
 	ld	r9, KVM_HOST_LPCR(r6)
 	andis.	r9, r9, LPCR_LD@h
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	ld	r8, HSTATE_KVM_VCPU(r13)
+	cmpdi	cr1, r8, 0
+	beq	cr1, 33f		/* Do we have a vcpu? */
+	ld	r9, VCPU_CUR_NEST(r8)
+	cmpdi	cr1, r9, 0
+	beq	cr1, 33f		/* Actually entering nested guest? */
+	ld	r9, VCPU_HDEC_EXPIRES(r8)
+33:
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	mfspr	r8,SPRN_DEC
 	mftb	r7
@@ -126,9 +136,19 @@ BEGIN_FTR_SECTION
 	bne	32f
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	extsw	r8,r8
-32:	mtspr	SPRN_HDEC,r8
-	add	r8,r8,r7
-	std	r8,HSTATE_DECEXP(r13)
+32:
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	beq	cr1, 34f
+	subf	r9, r7, r9	/* r9 = guest_hdec_expiry - tb */
+	cmpd	r8, r9		/* host_dec <= guest_hdec? */
+	ble	34f		/* if yes, then use host_dec */
+	mtspr	SPRN_HDEC, r9	/* if no, then use guest_hdec */
+	b	35f
+34:
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
+	mtspr	SPRN_HDEC,r8
+35:	add	r8,r8,r7
+	std	r8,HSTATE_DECEXP(r13)	/* Save away the host decr expiry */
 
 	/* Jump to partition switch code */
 	bl	kvmppc_hv_entry_trampoline

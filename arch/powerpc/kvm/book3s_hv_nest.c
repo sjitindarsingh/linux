@@ -24,6 +24,7 @@
 
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
 {
+	vcpu->arch.hdec_expires = (1ULL << 63) - 1; /* A big number... */
 }
 
 static struct kvm_arch_nested *kvmppc_find_nested(struct kvm *kvm,
@@ -333,7 +334,12 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case SPRN_HDAR:
 	case SPRN_SPURR:
 	case SPRN_PURR:
+		/* XXX TODO */
+		break;
 	case SPRN_HDEC:
+		vcpu->arch.hdec_expires = val + mftb();
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HRMOR:
 	case SPRN_HSRR0:
 	case SPRN_HSRR1:
@@ -427,7 +433,12 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_HDSISR:
 	case SPRN_HDAR:
+		/* XXX TODO */
+		break;
 	case SPRN_HDEC:
+		*val = vcpu->arch.hdec_expires - mftb();
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HRMOR:
 	case SPRN_HSRR0:
 	case SPRN_HSRR1:
@@ -560,6 +571,64 @@ int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	default:
 		rc = kvmppc_emulate_priv_op(run, vcpu, instr);
+		break;
+	}
+
+	return rc;
+}
+
+int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
+			      struct task_struct *tsk)
+{
+	int rc = RESUME_HOST;
+
+#ifdef DEBUG
+	pr_info_ratelimited("KVM: Nested trap 0x%x\n", vcpu->arch.trap);
+#endif
+
+	switch (vcpu->arch.trap) {
+	case BOOK3S_INTERRUPT_HV_DECREMENTER:
+		/*
+		 * Either the L0 host HDEC expired - we're good on these,
+		 * or the L1 guest HDEC expired, in which case we need to inject
+		 * an HDEC interrupt to that guest.
+		 */
+		{
+			u64 tb = mftb();
+
+			if (vcpu->arch.hdec_expires <= tb) {
+				/* Inject HDEC to guest */
+				/* XXX TODO */
+			} else {
+				vcpu->stat.dec_exits++;
+			}
+			rc = RESUME_GUEST;
+			break;
+		}
+	case BOOK3S_INTERRUPT_SYSCALL:
+	case BOOK3S_INTERRUPT_H_DATA_STORAGE:
+	case BOOK3S_INTERRUPT_H_INST_STORAGE:
+	case BOOK3S_INTERRUPT_H_DOORBELL:
+	case BOOK3S_INTERRUPT_H_VIRT:
+	case BOOK3S_INTERRUPT_SYSTEM_RESET:
+	case BOOK3S_INTERRUPT_MACHINE_CHECK:
+	case BOOK3S_INTERRUPT_EXTERNAL:
+	case BOOK3S_INTERRUPT_PROGRAM:
+	case BOOK3S_INTERRUPT_H_EMUL_ASSIST:
+	case BOOK3S_INTERRUPT_HMI:
+	case BOOK3S_INTERRUPT_PERFMON:
+	case BOOK3S_INTERRUPT_H_FAC_UNAVAIL:
+	case BOOK3S_INTERRUPT_HV_RM_HARD:
+		/* XXX TODO */
+	default:
+		printk(KERN_EMERG "KVM: Unhandled trap in nested guest\n");
+		kvmppc_dump_regs(vcpu);
+		printk(KERN_EMERG "trap=0x%x | pc=0x%lx | msr=0x%llx\n",
+		       vcpu->arch.trap, kvmppc_get_pc(vcpu),
+		       vcpu->arch.shregs.msr);
+		printk(KERN_EMERG "emul_inst=0x%x\n", vcpu->arch.emul_inst);
+		run->hw.hardware_exit_reason = vcpu->arch.trap;
+		rc = RESUME_HOST;
 		break;
 	}
 

@@ -800,6 +800,7 @@ struct kvm_vcpu_arch {
 	unsigned int shadow_lpid;
 	struct kvm_arch_nested *cur_nest;	/* Nested guest, or NULL */
 	struct kvm_arch_nested_hv_regs hv_regs;
+	u64 hdec_expires;			/* Guest HDEC expiry (host tb)*/
 #endif
 };
 

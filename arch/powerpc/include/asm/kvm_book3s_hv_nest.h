@@ -48,6 +48,8 @@ struct kvm_arch_nested {
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu);
 int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			unsigned int instr);
+int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
+			      struct task_struct *tsk);
 void kvmppc_init_vm_hv_nest(struct kvm *kvm);
 void kvmppc_destroy_vm_hv_nest(struct kvm *kvm);
 
