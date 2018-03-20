@@ -319,8 +319,15 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		}
 	case SPRN_TBWL:
 	case SPRN_TBWU:
-	case SPRN_TBU40:
 		/* XXX TODO */
+		break;
+	case SPRN_TBU40:
+		/*
+		 * Update the tb offset in the vcore accordingly
+		 * Can do this since on P9 there is only 1 thread per vcore
+		 */
+		vcpu->arch.vcore->tb_offset = ALIGN(val - mftb(), 1UL << 24);
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_HSPRG0:
 		vcpu->arch.hv_regs.hsprg0 = val;
