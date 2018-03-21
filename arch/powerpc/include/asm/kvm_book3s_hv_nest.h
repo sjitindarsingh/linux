@@ -21,6 +21,7 @@ struct hv_reg {
 
 /* Registers required to run a nested hypervisor */
 struct kvm_arch_nested_hv_regs {
+	ulong nested_dpdes;
 	/* HV registers we purely emulate */
 	ulong hsprg0;
 	ulong hsprg1;

@@ -298,6 +298,9 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	switch (sprn) {
 	case SPRN_DPDES:
+		vcpu->arch.hv_regs.nested_dpdes = val & 0x1UL;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_DAWR:
 	case SPRN_RPR:
 	case SPRN_CIABR:
