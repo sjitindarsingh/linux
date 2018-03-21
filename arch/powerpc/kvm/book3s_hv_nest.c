@@ -302,6 +302,10 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_DAWR:
+		vcpu->arch.hv_regs.dawr.val = val;
+		vcpu->arch.hv_regs.dawr.inited = 1;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_RPR:
 		/* XXX TODO */
 		break;
@@ -452,6 +456,10 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	switch (sprn) {
 	case SPRN_DAWR:
+		*val = vcpu->arch.hv_regs.dawr.inited ?
+		       vcpu->arch.hv_regs.dawr.val : vcpu->arch.dawr;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_RPR:
 		/* XXX TODO */
 		break;

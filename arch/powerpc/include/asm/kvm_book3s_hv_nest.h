@@ -30,6 +30,7 @@ struct kvm_arch_nested_hv_regs {
 	 * the nested guest because they'd modify L1 behaviour if updated
 	 * immediately.
 	 */
+	struct hv_reg dawr;
 	struct hv_reg ciabr;
 	struct hv_reg hfscr;
 	struct hv_reg lpcr;
