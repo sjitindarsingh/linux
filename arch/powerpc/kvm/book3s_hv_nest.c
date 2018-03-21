@@ -425,8 +425,11 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_ASDR:
-	case SPRN_IC:
 		/* XXX TODO */
+		break;
+	case SPRN_IC:
+		vcpu->arch.ic = val;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_VTB:
 		/* Can do this since on P9 there is only 1 thread per vcore */
