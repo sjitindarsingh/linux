@@ -318,7 +318,12 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_DAWRX:
-		/* XXX TODO */
+		if (!(val & DAWRX_HYP)) {
+			/* Guest can't set hypervisor state matching */
+			vcpu->arch.hv_regs.dawrx.val = val;
+			vcpu->arch.hv_regs.dawrx.inited = 1;
+		}
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_HFSCR:
 		{
@@ -469,7 +474,9 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_DAWRX:
-		/* XXX TODO */
+		*val = vcpu->arch.hv_regs.dawrx.inited ?
+		       vcpu->arch.hv_regs.dawrx.val : vcpu->arch.dawrx;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_HFSCR:
 		*val = vcpu->arch.hv_regs.hfscr.inited ?
