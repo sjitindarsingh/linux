@@ -25,6 +25,7 @@ struct kvm_arch_nested_hv_regs {
 	/* HV registers we purely emulate */
 	ulong hsprg0;
 	ulong hsprg1;
+	ulong hdsisr;
 	ulong hsrr0;
 	ulong hsrr1;
 	/*
