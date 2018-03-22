@@ -959,10 +959,10 @@ ALT_FTR_SECTION_END_IFCLR(CPU_FTR_ARCH_300)
 	mtspr	SPRN_DAR, r5
 	mtspr	SPRN_DSISR, r6
 
-	/* Restore AMR and UAMOR, set AMOR to all 1s */
+	/* Restore AMR, UAMOR and AMOR */
 	ld	r5,VCPU_AMR(r4)
 	ld	r6,VCPU_UAMOR(r4)
-	li	r7,-1
+	ld	r7,VCPU_AMOR(r4)
 	mtspr	SPRN_AMR,r5
 	mtspr	SPRN_UAMOR,r6
 	mtspr	SPRN_AMOR,r7

@@ -514,6 +514,7 @@ int main(void)
 	OFFSET(VCPU_AMR, kvm_vcpu, arch.amr);
 	OFFSET(VCPU_UAMOR, kvm_vcpu, arch.uamor);
 	OFFSET(VCPU_IAMR, kvm_vcpu, arch.iamr);
+	OFFSET(VCPU_AMOR, kvm_vcpu, arch.amor);
 	OFFSET(VCPU_CTRL, kvm_vcpu, arch.ctrl);
 	OFFSET(VCPU_DABR, kvm_vcpu, arch.dabr);
 	OFFSET(VCPU_DABRX, kvm_vcpu, arch.dabrx);

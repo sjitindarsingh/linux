@@ -542,6 +542,7 @@ struct kvm_vcpu_arch {
 	ulong amr;
 	ulong uamor;
 	ulong iamr;
+	ulong amor;
 	u32 ctrl;
 	u32 dabrx;
 	ulong dabr;

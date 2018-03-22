@@ -2039,6 +2039,9 @@ static struct kvm_vcpu *kvmppc_core_vcpu_create_hv(struct kvm *kvm,
 	if (cpu_has_feature(CPU_FTR_ARCH_300))
 		vcpu->arch.hfscr &= ~HFSCR_MSGP;
 
+	/* By default we allow the guest os to modify all key classes */
+	vcpu->arch.amor = -1;
+
 	kvmppc_mmu_book3s_hv_init(vcpu);
 
 	vcpu->arch.state = KVMPPC_VCPU_NOTREADY;
