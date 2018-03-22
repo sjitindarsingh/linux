@@ -132,6 +132,7 @@ struct kvmppc_host_state {
 	u64 host_purr;
 	u64 host_spurr;
 	u64 host_dscr;
+	u64 host_vtb;
 	u64 dec_expires;
 	struct kvm_split_mode *kvm_split_mode;
 #endif

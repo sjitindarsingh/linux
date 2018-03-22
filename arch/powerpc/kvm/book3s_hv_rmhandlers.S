@@ -712,6 +712,9 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 38:
 
 BEGIN_FTR_SECTION
+	/* Save away the host VTB */
+	mfspr	r6, SPRN_VTB
+	std	r6, HSTATE_HOST_VTB(r13)
 	/* DPDES and VTB are shared between threads */
 	ld	r8, VCORE_DPDES(r5)
 	ld	r7, VCORE_VTB(r5)
@@ -2016,8 +2019,10 @@ BEGIN_FTR_SECTION
 	mfspr	r8, SPRN_VTB
 	std	r7, VCORE_DPDES(r5)
 	std	r8, VCORE_VTB(r5)
-	/* clear DPDES so we don't get guest doorbells in the host */
+	/* clear DPDES so don't get guest doorbells in the host & restore VTB */
+	ld	r7, HSTATE_HOST_VTB(r13)
 	li	r8, 0
+	mtspr	SPRN_VTB, r7
 	mtspr	SPRN_DPDES, r8
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 
