@@ -26,6 +26,7 @@ struct kvm_arch_nested_hv_regs {
 	ulong hsprg0;
 	ulong hsprg1;
 	ulong hsrr0;
+	ulong hsrr1;
 	/*
 	 * HV registers we only use the nested value of when actually entering
 	 * the nested guest because they'd modify L1 behaviour if updated

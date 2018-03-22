@@ -382,7 +382,8 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_HSRR1:
-		/* XXX TODO */
+		vcpu->arch.hv_regs.hsrr1 = val;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_LPCR:
 		{
@@ -515,7 +516,8 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_HSRR1:
-		/* XXX TODO */
+		*val = vcpu->arch.hv_regs.hsrr1;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_LPCR:
 		*val = vcpu->arch.hv_regs.lpcr.inited ?
