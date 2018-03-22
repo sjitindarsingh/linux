@@ -298,8 +298,13 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case SPRN_HMEER:
 	case SPRN_PCR:
 	case SPRN_HEIR:
-	case SPRN_AMOR:
 		/* XXX TODO */
+		break;
+	case SPRN_AMOR:
+		/* The guest can reduce permissions, but can't add them */
+		vcpu->arch.hv_regs.amor.val = val & vcpu->arch.amor;
+		vcpu->arch.hv_regs.amor.inited = 1;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_PTCR:
 		vcpu->kvm->arch.ptcr = val;
@@ -367,8 +372,12 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case SPRN_HMEER:
 	case SPRN_PCR:
 	case SPRN_HEIR:
-	case SPRN_AMOR:
 		/* XXX TODO */
+		break;
+	case SPRN_AMOR:
+		*val = vcpu->arch.hv_regs.amor.inited ?
+		       vcpu->arch.hv_regs.amor.val : vcpu->arch.amor;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_PTCR:
 		*val = vcpu->kvm->arch.ptcr;

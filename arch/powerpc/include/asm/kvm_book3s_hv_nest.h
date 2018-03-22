@@ -30,6 +30,7 @@ struct kvm_arch_nested_hv_regs {
 	 * immediately.
 	 */
 	struct hv_reg lpcr;
+	struct hv_reg amor;
 };
 
 struct kvm_arch_nested {
