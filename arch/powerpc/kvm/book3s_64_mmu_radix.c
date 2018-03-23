@@ -865,12 +865,23 @@ int kvmhv_get_rmmu_info(struct kvm *kvm, struct kvm_ppc_rmmu_info *info)
 	return 0;
 }
 
+int kvmppc_init_pgtable_radix(struct kvm *kvm, pgd_t **pgtable)
+{
+	if (!pgtable) {
+		return -EINVAL;
+	}
+
+	*pgtable = pgd_alloc(kvm->mm);
+	if (!*pgtable) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
 int kvmppc_init_vm_radix(struct kvm *kvm)
 {
-	kvm->arch.pgtable = pgd_alloc(kvm->mm);
-	if (!kvm->arch.pgtable)
-		return -ENOMEM;
-	return 0;
+	return kvmppc_init_pgtable_radix(kvm, &kvm->arch.pgtable);
 }
 
 static void pte_ctor(void *addr)
