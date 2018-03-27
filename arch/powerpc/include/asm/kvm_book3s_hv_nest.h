@@ -26,6 +26,7 @@ struct kvm_arch_nested_hv_regs {
 	ulong hsprg0;
 	ulong hsprg1;
 	ulong hdsisr;
+	ulong hdar;
 	ulong hsrr0;
 	ulong hsrr1;
 	/*
