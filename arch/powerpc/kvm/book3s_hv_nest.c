@@ -929,6 +929,75 @@ void kvmppc_inject_interrupt_hdsi(struct kvm_vcpu *vcpu, u64 flags)
 	kvmppc_inject_hv_interrupt(vcpu, BOOK3S_INTERRUPT_H_DATA_STORAGE, 0ULL);
 }
 
+/* Used to convert a nested guest real address to a L1 guest real address */
+int kvmppc_book3s_translate_addr_nested(struct kvm_vcpu *vcpu,
+					unsigned long gpa, unsigned long dsisr,
+					struct kvmppc_pte *gpte)
+{
+	unsigned int lpid = vcpu->arch.cur_nest->shadow_lpid;
+	u64 flags = 0ULL;
+	int rc;
+
+	rc = kvmppc_mmu_radix_translate_table(vcpu, gpa, gpte,
+					      vcpu->kvm->arch.ptcr, lpid,
+					      false);
+	if (rc) {
+		/* We didn't find a pte */
+		if (rc == -EINVAL) {
+			/* Unsupported mmu config */
+			flags |= DSISR_UNSUPP_MMU;
+		} else if (rc == -ENOENT) {
+			/* No translation found */
+			flags |= DSISR_NOHPTE;
+		} else {
+			/* Internal Error */
+			return rc;
+		}
+		if (dsisr) {
+			/* This was an HDSI -> Inject HDSI */
+			goto inject_hdsi;
+		} else {
+			/* This was an HISI -> Inject HISI */
+			goto inject_hisi;
+		}
+	}
+
+	/* We found a pte -> check permissions */
+	if (dsisr) {
+		/* This was an HDSI */
+		if (dsisr & DSISR_ISSTORE) {
+			/* Can we write? */
+			flags |= gpte->may_write ? 0 : DSISR_PROTFAULT;
+		} else {
+			/* Can we read? */
+			flags |= gpte->may_read ? 0 : DSISR_PROTFAULT;
+		}
+		if (flags) {
+			goto inject_hdsi;
+		}
+	} else {
+		/* This was an HISI */
+		if (!gpte->may_execute) {
+			/* Can we execute? */
+			flags |= SRR1_ISI_N_OR_G;
+		}
+		if (flags) {
+			goto inject_hisi;
+		}
+	}
+
+	/* All Good! */
+	return 0;
+
+inject_hdsi:
+	flags |= (dsisr & DSISR_ISSTORE);
+	kvmppc_inject_interrupt_hdsi(vcpu, flags);
+	return 1;
+inject_hisi:
+	kvmppc_inject_interrupt_hisi(vcpu, flags);
+	return 1;
+}
+
 int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			      struct task_struct *tsk)
 {
