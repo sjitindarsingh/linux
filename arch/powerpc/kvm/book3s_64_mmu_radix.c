@@ -417,8 +417,9 @@ static void kvmppc_unmap_free_pud_entry_table(struct kvm *kvm, pud_t *pud,
  */
 #define PTE_BITS_MUST_MATCH (~(_PAGE_WRITE | _PAGE_DIRTY | _PAGE_ACCESSED))
 
-static int kvmppc_create_pte(struct kvm *kvm, pte_t pte, unsigned long gpa,
-			     unsigned int level, unsigned long mmu_seq)
+int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
+		      unsigned long gpa, unsigned int level,
+		      unsigned long mmu_seq)
 {
 	pgd_t *pgd;
 	pud_t *pud, *new_pud = NULL;
@@ -427,7 +428,7 @@ static int kvmppc_create_pte(struct kvm *kvm, pte_t pte, unsigned long gpa,
 	int ret;
 
 	/* Traverse the guest's 2nd-level tree, allocate new levels needed */
-	pgd = kvm->arch.pgtable + pgd_index(gpa);
+	pgd = pgtable + pgd_index(gpa);
 	pud = NULL;
 	if (pgd_present(*pgd))
 		pud = pud_offset(pgd, gpa);
@@ -582,95 +583,50 @@ static int kvmppc_create_pte(struct kvm *kvm, pte_t pte, unsigned long gpa,
 	return ret;
 }
 
-int kvmppc_book3s_radix_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
-				   unsigned long ea, unsigned long dsisr)
+void kvmppc_hv_handle_set_rc(struct kvm *kvm, pgd_t *pgtable,
+			     unsigned long *dsisr, unsigned long gpa)
+{
+	bool writing = !!(*dsisr & DSISR_ISSTORE);
+	unsigned long pgflags;
+	unsigned int shift;
+	pte_t *ptep;
+
+	/*
+	 * Need to set an R or C bit in the 2nd-level tables;
+	 * since we are just helping out the hardware here,
+	 * it is sufficient to do what the hardware does.
+	 */
+	pgflags = _PAGE_ACCESSED;
+	if (writing)
+		pgflags |= _PAGE_DIRTY;
+	/*
+	 * We are walking the secondary page table here. We can do this
+	 * without disabling irq.
+	 */
+	ptep = __find_linux_pte(pgtable, gpa, NULL, &shift);
+	if (ptep && pte_present(*ptep) && (!writing || pte_write(*ptep))) {
+		kvmppc_radix_update_pte(kvm, ptep, 0, pgflags, gpa, shift);
+		*dsisr = *dsisr & ~DSISR_SET_RC;
+	}
+}
+
+int kvmppc_book3s_handle_radix_page_fault(struct kvm_vcpu *vcpu,
+					  unsigned long gpa,
+					  struct kvm_memory_slot *memslot,
+					  bool writing, bool kvm_ro,
+					  pte_t *inserted_pte,
+					  unsigned int *levelp)
 {
 	struct kvm *kvm = vcpu->kvm;
-	unsigned long mmu_seq, pte_size;
-	unsigned long gpa, gfn, hva, pfn;
-	struct kvm_memory_slot *memslot;
 	struct page *page = NULL;
-	long ret;
-	bool writing;
+	unsigned long mmu_seq, pte_size;
+	unsigned long hva, pfn, gfn = gpa >> PAGE_SHIFT;
 	bool upgrade_write = false;
 	bool *upgrade_p = &upgrade_write;
 	pte_t pte, *ptep;
 	unsigned long pgflags;
 	unsigned int shift, level;
-
-	/* Check for unusual errors */
-	if (dsisr & DSISR_UNSUPP_MMU) {
-		pr_err("KVM: Got unsupported MMU fault\n");
-		return -EFAULT;
-	}
-	if (dsisr & DSISR_BADACCESS) {
-		/* Reflect to the guest as DSI */
-		pr_err("KVM: Got radix HV page fault with DSISR=%lx\n", dsisr);
-		kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
-		return RESUME_GUEST;
-	}
-
-	/* Translate the logical address and get the page */
-	gpa = vcpu->arch.fault_gpa & ~0xfffUL;
-	gpa &= ~0xF000000000000000ul;
-	gfn = gpa >> PAGE_SHIFT;
-	if (!(dsisr & DSISR_PRTABLE_FAULT))
-		gpa |= ea & 0xfff;
-	memslot = gfn_to_memslot(kvm, gfn);
-
-	/* No memslot means it's an emulated MMIO region */
-	if (!memslot || (memslot->flags & KVM_MEMSLOT_INVALID)) {
-		if (dsisr & (DSISR_PRTABLE_FAULT | DSISR_BADACCESS |
-			     DSISR_SET_RC)) {
-			/*
-			 * Bad address in guest page table tree, or other
-			 * unusual error - reflect it to the guest as DSI.
-			 */
-			kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
-			return RESUME_GUEST;
-		}
-		return kvmppc_hv_emulate_mmio(run, vcpu, gpa, ea,
-					      dsisr & DSISR_ISSTORE);
-	}
-
-	writing = (dsisr & DSISR_ISSTORE) != 0;
-	if (memslot->flags & KVM_MEM_READONLY) {
-		if (writing) {
-			/* give the guest a DSI */
-			dsisr = DSISR_ISSTORE | DSISR_PROTFAULT;
-			kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
-			return RESUME_GUEST;
-		}
-		upgrade_p = NULL;
-	}
-
-	if (dsisr & DSISR_SET_RC) {
-		/*
-		 * Need to set an R or C bit in the 2nd-level tables;
-		 * since we are just helping out the hardware here,
-		 * it is sufficient to do what the hardware does.
-		 */
-		pgflags = _PAGE_ACCESSED;
-		if (writing)
-			pgflags |= _PAGE_DIRTY;
-		/*
-		 * We are walking the secondary page table here. We can do this
-		 * without disabling irq.
-		 */
-		spin_lock(&kvm->mmu_lock);
-		ptep = __find_linux_pte(kvm->arch.pgtable,
-					gpa, NULL, &shift);
-		if (ptep && pte_present(*ptep) &&
-		    (!writing || pte_write(*ptep))) {
-			kvmppc_radix_update_pte(kvm, ptep, 0, pgflags,
-						gpa, shift);
-			dsisr &= ~DSISR_SET_RC;
-		}
-		spin_unlock(&kvm->mmu_lock);
-		if (!(dsisr & (DSISR_BAD_FAULT_64S | DSISR_NOHPTE |
-			       DSISR_PROTFAULT | DSISR_SET_RC)))
-			return RESUME_GUEST;
-	}
+	int rc;
 
 	/* used to check for invalidations in progress */
 	mmu_seq = kvm->mmu_notifier_seq;
@@ -683,7 +639,7 @@ int kvmppc_book3s_radix_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	 * is that the page is writable.
 	 */
 	hva = gfn_to_hva_memslot(memslot, gfn);
-	if (upgrade_p && __get_user_pages_fast(hva, 1, 1, &page) == 1) {
+	if ((!kvm_ro) && __get_user_pages_fast(hva, 1, 1, &page) == 1) {
 		pfn = page_to_pfn(page);
 		upgrade_write = true;
 	} else {
@@ -700,27 +656,27 @@ int kvmppc_book3s_radix_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		}
 	}
 
-	/* See if we can insert a 1GB or 2MB large PTE here */
 	level = 0;
-	if (page && PageCompound(page)) {
-		pte_size = PAGE_SIZE << compound_order(compound_head(page));
-		if (pte_size >= PUD_SIZE &&
-		    (gpa & (PUD_SIZE - PAGE_SIZE)) ==
-		    (hva & (PUD_SIZE - PAGE_SIZE))) {
-			level = 2;
-			pfn &= ~((PUD_SIZE >> PAGE_SHIFT) - 1);
-		} else if (pte_size >= PMD_SIZE &&
-			   (gpa & (PMD_SIZE - PAGE_SIZE)) ==
-			   (hva & (PMD_SIZE - PAGE_SIZE))) {
-			level = 1;
-			pfn &= ~((PMD_SIZE >> PAGE_SHIFT) - 1);
-		}
-	}
-
 	/*
 	 * Compute the PTE value that we need to insert.
 	 */
 	if (page) {
+		/* See if we can insert a 1GB or 2MB large PTE here */
+		if (PageCompound(page)) {
+			pte_size = PAGE_SIZE <<
+				   compound_order(compound_head(page));
+			if (pte_size >= PUD_SIZE &&
+			    (gpa & (PUD_SIZE - PAGE_SIZE)) ==
+			    (hva & (PUD_SIZE - PAGE_SIZE))) {
+				level = 2;
+				pfn &= ~((PUD_SIZE >> PAGE_SHIFT) - 1);
+			} else if (pte_size >= PMD_SIZE &&
+				   (gpa & (PMD_SIZE - PAGE_SIZE)) ==
+				   (hva & (PMD_SIZE - PAGE_SIZE))) {
+				level = 1;
+				pfn &= ~((PMD_SIZE >> PAGE_SHIFT) - 1);
+			}
+		}
 		pgflags = _PAGE_READ | _PAGE_EXEC | _PAGE_PRESENT | _PAGE_PTE |
 			_PAGE_ACCESSED;
 		if (writing || upgrade_write)
@@ -758,13 +714,93 @@ int kvmppc_book3s_radix_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	}
 
 	/* Allocate space in the tree and write the PTE */
-	ret = kvmppc_create_pte(kvm, pte, gpa, level, mmu_seq);
+	rc = kvmppc_create_pte(kvm, kvm->arch.pgtable, pte, gpa, level,
+			       mmu_seq);
+	if (inserted_pte) {
+		*inserted_pte = pte;
+	}
+	if (levelp) {
+		*levelp = level;
+	}
 
 	if (page) {
-		if (!ret && (pte_val(pte) & _PAGE_WRITE))
+		if (!rc && (pte_val(pte) & _PAGE_WRITE))
 			set_page_dirty_lock(page);
 		put_page(page);
 	}
+
+	return rc;
+}
+
+int kvmppc_book3s_radix_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
+				   unsigned long ea, unsigned long dsisr)
+{
+	struct kvm *kvm = vcpu->kvm;
+	unsigned long gpa, gfn;
+	struct kvm_memory_slot *memslot;
+	long ret;
+	bool writing = !!(dsisr & DSISR_ISSTORE);
+	bool kvm_ro = false;
+
+	/* Check for unusual errors */
+	if (dsisr & DSISR_UNSUPP_MMU) {
+		pr_err("KVM: Got unsupported MMU fault\n");
+		return -EFAULT;
+	}
+	if (dsisr & DSISR_BADACCESS) {
+		/* Reflect to the guest as DSI */
+		pr_err("KVM: Got radix HV page fault with DSISR=%lx\n", dsisr);
+		kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
+		return RESUME_GUEST;
+	}
+
+	/* Translate the logical address */
+	gpa = vcpu->arch.fault_gpa & ~0xfffUL;
+	gpa &= ~0xF000000000000000ul;
+	gfn = gpa >> PAGE_SHIFT;
+	if (!(dsisr & DSISR_PRTABLE_FAULT))
+		gpa |= ea & 0xfff;
+
+	/* Get the corresponding memslot */
+	memslot = gfn_to_memslot(kvm, gfn);
+	/* No memslot means it's an emulated MMIO region */
+	if (!memslot || (memslot->flags & KVM_MEMSLOT_INVALID)) {
+		if (dsisr & (DSISR_PRTABLE_FAULT | DSISR_BADACCESS |
+			     DSISR_SET_RC)) {
+			/*
+			 * Bad address in guest page table tree, or other
+			 * unusual error - reflect it to the guest as DSI.
+			 */
+			kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
+			return RESUME_GUEST;
+		}
+		return kvmppc_hv_emulate_mmio(run, vcpu, gpa, ea,
+					      dsisr & DSISR_ISSTORE);
+	} else if (memslot->flags & KVM_MEM_READONLY) {
+		if (dsisr & DSISR_ISSTORE) {
+			/* give the guest a DSI */
+			kvmppc_core_queue_data_storage(vcpu, ea, DSISR_ISSTORE |
+						       DSISR_PROTFAULT);
+			return RESUME_GUEST;
+		}
+		kvm_ro = true;
+	}
+
+	/* Failed to set the reference/change bits */
+	if (dsisr & DSISR_SET_RC) {
+		spin_lock(&kvm->mmu_lock);
+		kvmppc_hv_handle_set_rc(kvm, kvm->arch.pgtable, &dsisr, gpa);
+		spin_unlock(&kvm->mmu_lock);
+
+		if (!(dsisr & (DSISR_BAD_FAULT_64S | DSISR_NOHPTE |
+			       DSISR_PROTFAULT | DSISR_SET_RC))) {
+			return RESUME_GUEST;
+		}
+	}
+
+	/* Try to insert a pte */
+	ret = kvmppc_book3s_handle_radix_page_fault(vcpu, gpa, memslot, writing,
+						    kvm_ro, NULL, NULL);
 
 	if (ret == 0 || ret == -EAGAIN)
 		ret = RESUME_GUEST;
