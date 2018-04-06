@@ -855,8 +855,11 @@ pte_t *__find_linux_pte(pgd_t *pgdir, unsigned long ea,
 				goto out;
 			} else if (is_hugepd(__hugepd(pmd_val(pmd))))
 				hpdp = (hugepd_t *)&pmd;
-			else
-				return pte_offset_kernel(&pmd, ea);
+			else {
+				pdshift = PAGE_SHIFT;
+				ret_pte = pte_offset_kernel(&pmd, ea);
+				goto out;
+			}
 		}
 	}
 	if (!hpdp)
