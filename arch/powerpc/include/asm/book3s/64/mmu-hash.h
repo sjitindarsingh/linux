@@ -203,6 +203,19 @@ static inline unsigned int mmu_psize_to_shift(unsigned int mmu_psize)
 	BUG();
 }
 
+static inline unsigned int ap_encoding_to_shift(unsigned long ap_enc)
+{
+	int psize;
+
+	for (psize = 0; psize < MMU_PAGE_COUNT; psize++) {
+		if (mmu_psize_defs[psize].ap == ap_enc) {
+			return mmu_psize_defs[psize].shift;
+		}
+	}
+
+	return 0;
+}
+
 static inline unsigned long get_sllp_encoding(int psize)
 {
 	unsigned long sllp;

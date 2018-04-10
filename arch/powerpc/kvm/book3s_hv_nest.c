@@ -437,6 +437,7 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 	int rs, rb;
 	int ric, prs, r, is, ap = 0;
 	int lpid;
+	long npages = 1;
 	long epn = 0;
 
 	rs = get_rs(instr);
@@ -448,8 +449,18 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 	lpid = get_lpid(vcpu->arch.gpr[rs]);
 	is = get_is(vcpu->arch.gpr[rb]);
 	if (!is) {
+		int shift;
+
 		epn = get_epn(vcpu->arch.gpr[rb]);
 		ap = get_ap(vcpu->arch.gpr[rb]);
+		shift = ap_encoding_to_shift(ap);
+		if (!shift) {
+			pr_err("KVM: Invalid ap encoding (0x%x) in tlbie instr\n",
+			       ap);
+			return EMULATE_FAIL;
+		}
+		epn &= ~((1UL << shift) - 1);
+		npages = 1ULL << (shift - PAGE_SHIFT);
 	}
 
 #ifdef DEBUG
@@ -471,8 +482,51 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 
 	switch (is) {
 	case 0: /* Invalidate target address TLB entry (we know ric == 0) */
-		/* XXX TODO */
-		return EMULATE_FAIL;
+		/*
+		 * We never look at or cache entries from the lpid 0 partition
+		 * table so only something to do if lpid != 0:
+		 * - Invalidate the entry in our own shadow_pgtable
+		 * - Perform the appropriate tlbie ourselves
+		 * Note: there might be multiple host pages to invalidate for a
+		 *       single guest tlbie
+		 */
+		if (lpid) {
+			struct kvm_arch_nested *nested;
+			pgd_t *pgtable;
+			pte_t *ptep;
+			int shift;
+
+			nested = kvmppc_find_nested(vcpu->kvm, lpid);
+			if (!nested) {
+				break;
+			}
+
+			mutex_lock(&nested->lock);
+			/* Nothing to do if haven't alloced pgtable */
+			if (!nested->shadow_pgtable) {
+				mutex_unlock(&nested->lock);
+				break;
+			}
+
+			pgtable = nested->shadow_pgtable;
+			lpid = nested->lpid;
+
+			do {
+				ptep = __find_linux_pte(pgtable, epn, NULL,
+							&shift);
+				if (ptep && pte_present(*ptep)) {
+					kvmppc_radix_remove_nest_pte(vcpu->kvm,
+								     ptep, epn,
+								     shift,
+								     lpid);
+				}
+				npages -= 1ULL << (shift - PAGE_SHIFT);
+				epn += 1UL << shift;
+			} while (npages > 0);
+			/* We don't remove the rmaps, let other code do that */
+			mutex_unlock(&nested->lock);
+		}
+		break;
 	case 2:	/* Invalidate matching lpid */
 		switch (ric) {
 		case 2:
