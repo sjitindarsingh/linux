@@ -220,6 +220,7 @@ extern int kvmppc_book3s_handle_radix_page_fault(struct kvm_vcpu *vcpu,
 						 unsigned int *levelp);
 extern int kvmppc_init_pgtable_radix(struct kvm *kvm, pgd_t **pgtable);
 extern int kvmppc_init_vm_radix(struct kvm *kvm);
+extern void kvmppc_free_pgtable_radix(struct kvm *kvm, pgd_t **pgtable);
 extern void kvmppc_free_radix(struct kvm *kvm);
 extern int kvmppc_radix_init(void);
 extern void kvmppc_radix_exit(void);

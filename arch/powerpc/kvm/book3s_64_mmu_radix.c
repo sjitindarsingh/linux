@@ -375,14 +375,14 @@ static void kvmppc_unmap_free_pud(struct kvm *kvm, pud_t *pud)
 	pud_free(kvm->mm, pud);
 }
 
-void kvmppc_free_radix(struct kvm *kvm)
+void kvmppc_free_pgtable_radix(struct kvm *kvm, pgd_t **pgtable)
 {
 	unsigned long ig;
 	pgd_t *pgd;
 
-	if (!kvm->arch.pgtable)
+	if (!pgtable || !*pgtable)
 		return;
-	pgd = kvm->arch.pgtable;
+	pgd = *pgtable;
 	for (ig = 0; ig < PTRS_PER_PGD; ++ig, ++pgd) {
 		pud_t *pud;
 
@@ -392,8 +392,13 @@ void kvmppc_free_radix(struct kvm *kvm)
 		kvmppc_unmap_free_pud(kvm, pud);
 		pgd_clear(pgd);
 	}
-	pgd_free(kvm->mm, kvm->arch.pgtable);
-	kvm->arch.pgtable = NULL;
+	pgd_free(kvm->mm, *pgtable);
+	*pgtable = NULL;
+}
+
+void kvmppc_free_radix(struct kvm *kvm)
+{
+	kvmppc_free_pgtable_radix(kvm, &kvm->arch.pgtable);
 }
 
 static void kvmppc_unmap_free_pmd_entry_table(struct kvm *kvm, pmd_t *pmd,
