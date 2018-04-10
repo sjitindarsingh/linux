@@ -396,6 +396,55 @@ static int kvmppc_find_update_process_table(struct kvm *kvm,
 	return 0;
 }
 
+/*
+ * For all memslots, clear the rmap of all entries (matching lpid if != 0)
+ * This doesn't invalidate ptes or perform any tlbies
+ */
+static void kvmppc_clear_nest_rmap_lpid(struct kvm *kvm, int lpid)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	int mem_slot;
+
+	for (mem_slot = 0; mem_slot < slots->used_slots; mem_slot++) {
+		struct kvm_memory_slot *memslot = &slots->memslots[mem_slot];
+		unsigned long page;
+
+		for (page = 0; page < memslot->npages; page++) {
+			unsigned long *rmap = &memslot->arch.rmap[page];
+			struct list_head *head;
+
+			lock_rmap_nest(rmap);
+
+			head = get_rmap_nest(rmap);
+
+			if (head) {
+				struct kvm_nest_rmap *cur, *n;
+
+				list_for_each_entry_safe(cur, n, head, list) {
+					/*
+					 * If this rmap matches, remove it. No
+					 * need to invalidate or tlbie the pte,
+					 * this guest is going away so it's
+					 * pgtable has been removed and we will
+					 * do a global tlbie.
+					 */
+					if (cur->lpid == lpid || !lpid) {
+						list_del(&cur->list);
+						kfree(cur);
+					}
+				}
+
+				if (list_empty(head)) {
+					set_rmap_nest(rmap, NULL);
+					kfree(head);
+				}
+			}
+
+			unlock_rmap_nest(rmap);
+		}
+	}
+}
+
 static inline int get_ric(unsigned int instr)
 {
 	return (instr >> 18) & 0x3;
@@ -563,12 +612,34 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 				struct kvm_arch_nested *nested;
 				nested = kvmppc_find_nested(vcpu->kvm, lpid);
 
-				/* Nothing to do if haven't alloced pgtable */
-				if (nested && nested->shadow_pgtable) {
-					/* XXX TODO */
-					return EMULATE_FAIL;
+				if (!nested) {
+					goto no_nested;
 				}
+
+				mutex_lock(&nested->lock);
+				/* Nothing to do if haven't alloced pgtable */
+				if (!nested->shadow_pgtable) {
+					goto unlock;
+				}
+
+				/* Free page table since global invalidate */
+				kvmppc_free_pgtable_radix(vcpu->kvm,
+							  &nested->shadow_pgtable);
+				kvmppc_clear_nest_rmap_lpid(vcpu->kvm,
+							    nested->shadow_lpid);
+
+				if (!nested->lpid) {
+					goto unlock;
+				}
+
+				/* Return the lpid to the pool */
+				kvmppc_setup_partition_table_nested(nested);
+				kvmppc_free_lpid(nested->lpid);
+				nested->lpid = 0;
+unlock:
+				mutex_unlock(&nested->lock);
 			}
+no_nested:
 		case 1:
 			/*
 			 * Invalidate Page Walk Cache
