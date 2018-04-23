@@ -1643,4 +1643,32 @@ void kvmppc_init_vm_hv_nest(struct kvm *kvm)
 
 void kvmppc_destroy_vm_hv_nest(struct kvm *kvm)
 {
+	struct kvm_arch_nested *cur, *n;
+
+	/* For each nested guest free the shadow_pgtable and reclaim the lpid */
+	list_for_each_entry_safe(cur, n, &kvm->arch.nested, list) {
+		mutex_lock(&cur->lock);
+
+		if (!cur->shadow_pgtable) {
+			goto free_nested;
+		}
+
+		kvmppc_free_pgtable_radix(kvm, &cur->shadow_pgtable);
+		if (!cur->lpid) {
+			goto free_nested;
+		}
+
+		/* Return the lpid to the pool */
+		cur->process_table = 0ULL;
+		kvmppc_setup_partition_table_nested(cur);
+		kvmppc_free_lpid(cur->lpid);
+		cur->lpid = 0;
+
+free_nested:
+		list_del(&cur->list);
+		kfree(cur);
+	}
+
+	/* Clear the rmap for all memslots */
+	kvmppc_clear_nest_rmap_lpid(kvm, 0);
 }
