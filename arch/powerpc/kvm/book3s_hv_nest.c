@@ -959,6 +959,13 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_HDEC:
 		vcpu->arch.hdec_expires = val + mftb();
+		if (val < 0) {
+			kvmppc_book3s_queue_irqprio(vcpu,
+					BOOK3S_INTERRUPT_HV_DECREMENTER);
+		} else {
+			kvmppc_book3s_dequeue_irqprio(vcpu,
+					BOOK3S_INTERRUPT_HV_DECREMENTER);
+		}
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_HRMOR:
@@ -1248,6 +1255,32 @@ int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	}
 
 	return rc;
+}
+
+/* Can a hypervisor interrupt be delivered which requires MSR[EE]? */
+int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec)
+{
+	ulong lpcr;
+	int ret;
+
+	if (vcpu->arch.cur_nest) {
+		ret = 1;
+		/* Our lpcr is in the hv_regs struct since nested */
+		lpcr = vcpu->arch.hv_regs.lpcr.val;
+	} else {
+		ret = !!(vcpu->arch.shregs.msr & MSR_EE);
+		lpcr = vcpu->arch.vcore->lpcr;
+	}
+
+	switch (vec) {
+	case BOOK3S_INTERRUPT_HV_DECREMENTER:
+		ret &= !!(lpcr & LPCR_HDICE);
+		break;
+	default:
+		break;
+	}
+
+	return ret;
 }
 
 void kvmppc_inject_hv_interrupt(struct kvm_vcpu *vcpu, int vec, u64 flags)
@@ -1584,8 +1617,9 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			u64 tb = mftb();
 
 			if (vcpu->arch.hdec_expires <= tb) {
-				/* Inject HDEC to guest */
-				/* XXX TODO */
+				/* Queue HDEC for injection to guest */
+				kvmppc_book3s_queue_irqprio(vcpu,
+					BOOK3S_INTERRUPT_HV_DECREMENTER);
 			} else {
 				vcpu->stat.dec_exits++;
 			}

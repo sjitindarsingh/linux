@@ -156,6 +156,7 @@ static int kvmppc_book3s_vec2irqprio(unsigned int vec)
 	case 0x700: prio = BOOK3S_IRQPRIO_PROGRAM;		break;
 	case 0x800: prio = BOOK3S_IRQPRIO_FP_UNAVAIL;		break;
 	case 0x900: prio = BOOK3S_IRQPRIO_DECREMENTER;		break;
+	case 0x980: prio = BOOK3S_IRQPRIO_H_DECREMENTER;	break;
 	case 0xc00: prio = BOOK3S_IRQPRIO_SYSCALL;		break;
 	case 0xd00: prio = BOOK3S_IRQPRIO_DEBUG;		break;
 	case 0xf20: prio = BOOK3S_IRQPRIO_ALTIVEC;		break;
@@ -272,11 +273,17 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 	int deliver = 1;
 	int vec = 0;
 	bool crit = kvmppc_critical_section(vcpu);
+	bool hv_int = 0;
 
 	switch (priority) {
 	case BOOK3S_IRQPRIO_DECREMENTER:
 		deliver = (kvmppc_get_msr(vcpu) & MSR_EE) && !crit;
 		vec = BOOK3S_INTERRUPT_DECREMENTER;
+		break;
+	case BOOK3S_IRQPRIO_H_DECREMENTER:
+		vec = BOOK3S_INTERRUPT_HV_DECREMENTER;
+		hv_int = 1;
+		deliver = kvmppc_can_deliver_hv_int(vcpu, vec);
 		break;
 	case BOOK3S_IRQPRIO_EXTERNAL:
 	case BOOK3S_IRQPRIO_EXTERNAL_LEVEL:
@@ -338,8 +345,13 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 	printk(KERN_INFO "Deliver interrupt 0x%x? %x\n", vec, deliver);
 #endif
 
-	if (deliver)
-		kvmppc_inject_interrupt(vcpu, vec, 0);
+	if (deliver) {
+		if (hv_int) {
+			kvmppc_inject_hv_interrupt(vcpu, vec, 0ULL);
+		} else {
+			kvmppc_inject_interrupt(vcpu, vec, 0);
+		}
+	}
 
 	return deliver;
 }
