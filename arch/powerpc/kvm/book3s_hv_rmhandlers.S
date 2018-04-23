@@ -2318,6 +2318,12 @@ hcall_try_real_mode:
 	andi.	r0,r11,MSR_PR
 	/* sc 1 from userspace - reflect to guest syscall */
 	bne	sc_1_fast_return
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	/* If nested guest continue exiting so we get to the nested handler */
+	ld	r4, VCPU_CUR_NEST(r9)
+	cmpdi	r4, 0
+	bne	guest_exit_cont
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 	clrrdi	r3,r3,2
 	cmpldi	r3,hcall_real_table_end - hcall_real_table
 	bge	guest_exit_cont

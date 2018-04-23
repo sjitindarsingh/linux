@@ -1626,6 +1626,10 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			rc = RESUME_GUEST;
 			break;
 		}
+	case BOOK3S_INTERRUPT_SYSCALL:
+		kvmppc_book3s_queue_irqprio(vcpu, BOOK3S_INTERRUPT_SYSCALL);
+		rc = RESUME_GUEST;
+		break;
 	/*
 	 * We get these two when the hardware was unable to perform partition
 	 * scoped translation of the nested guest real address. This means we're
@@ -1642,7 +1646,6 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		pr_info("Page Fault in Nested Guest: 0x%x\n", vcpu->arch.trap);
 #endif
 		break;
-	case BOOK3S_INTERRUPT_SYSCALL:
 	case BOOK3S_INTERRUPT_H_DOORBELL:
 	case BOOK3S_INTERRUPT_H_VIRT:
 	case BOOK3S_INTERRUPT_SYSTEM_RESET:

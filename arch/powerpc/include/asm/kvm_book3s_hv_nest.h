@@ -114,6 +114,7 @@ void kvmppc_clear_all_nest_rmap(struct kvm *kvm,
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu);
 int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			unsigned int instr);
+void kvmppc_exit_nested(struct kvm_vcpu *vcpu);
 int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec);
 void kvmppc_inject_hv_interrupt(struct kvm_vcpu *vcpu, int vec, u64 flags);
 int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
