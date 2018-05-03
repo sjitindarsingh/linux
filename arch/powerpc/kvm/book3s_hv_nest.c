@@ -1359,6 +1359,8 @@ int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec)
 	case BOOK3S_INTERRUPT_HV_DECREMENTER:
 		ret &= !!(lpcr & LPCR_HDICE);
 		break;
+	case BOOK3S_IRQPRIO_H_VIRTUALISATION:
+		ret &= !!(lpcr & LPCR_HVICE);
 	default:
 		break;
 	}
@@ -1739,6 +1741,9 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = RESUME_GUEST;
 		break;
 	case BOOK3S_INTERRUPT_H_VIRT:
+		kvmppc_book3s_queue_irqprio(vcpu, BOOK3S_INTERRUPT_H_VIRT);
+		rc = EMULATE_DONE;
+		break;
 	case BOOK3S_INTERRUPT_SYSTEM_RESET:
 	case BOOK3S_INTERRUPT_MACHINE_CHECK:
 	case BOOK3S_INTERRUPT_EXTERNAL:

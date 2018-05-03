@@ -160,6 +160,7 @@ static int kvmppc_book3s_vec2irqprio(unsigned int vec)
 	case 0xc00: prio = BOOK3S_IRQPRIO_SYSCALL;		break;
 	case 0xd00: prio = BOOK3S_IRQPRIO_DEBUG;		break;
 	case 0xe80: prio = BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL;	break;
+	case 0xea0: prio = BOOK3S_IRQPRIO_H_VIRTUALISATION;	break;
 	case 0xf20: prio = BOOK3S_IRQPRIO_ALTIVEC;		break;
 	case 0xf40: prio = BOOK3S_IRQPRIO_VSX;			break;
 	case 0xf60: prio = BOOK3S_IRQPRIO_FAC_UNAVAIL;		break;
@@ -338,6 +339,11 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 		 * to the host so we can try again to inject the interrupt.
 		 */
 		vec = BOOK3S_INTERRUPT_H_DOORBELL;
+		hv_int = 1;
+		deliver = kvmppc_can_deliver_hv_int(vcpu, vec);
+		break;
+	case BOOK3S_IRQPRIO_H_VIRTUALISATION:
+		vec = BOOK3S_INTERRUPT_H_VIRT;
 		hv_int = 1;
 		deliver = kvmppc_can_deliver_hv_int(vcpu, vec);
 		break;
