@@ -448,6 +448,7 @@
 #define   LPCR_HEIC		ASM_CONST(0x0000000000000010)   /* Hypervisor External Interrupt Control */
 #define   LPCR_LPES		0x0000000c
 #define   LPCR_LPES0		ASM_CONST(0x0000000000000008)      /* LPAR Env selector 0 */
+#define   LPCR_LPES0_SH		3
 #define   LPCR_LPES1		ASM_CONST(0x0000000000000004)      /* LPAR Env selector 1 */
 #define   LPCR_LPES_SH		2
 #define   LPCR_RMI		ASM_CONST(0x0000000000000002)      /* real mode is cache inhibit */

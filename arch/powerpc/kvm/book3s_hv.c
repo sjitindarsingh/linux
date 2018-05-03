@@ -450,7 +450,7 @@ void kvmppc_dump_regs(struct kvm_vcpu *vcpu)
 	       vcpu->arch.last_inst);
 }
 
-static struct kvm_vcpu *kvmppc_find_vcpu(struct kvm *kvm, int id)
+struct kvm_vcpu *kvmppc_find_vcpu(struct kvm *kvm, int id)
 {
 	struct kvm_vcpu *ret;
 

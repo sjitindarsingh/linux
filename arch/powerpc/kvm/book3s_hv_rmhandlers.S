@@ -1128,10 +1128,20 @@ kvmppc_cede_reentry:		/* r4 = vcpu, r13 = paca */
 	ld	r0, VCPU_PENDING_EXC(r4)
 	rldicl	r0, r0, 64 - BOOK3S_IRQPRIO_EXTERNAL_LEVEL, 63
 	cmpdi	cr1, r0, 0
+	rldicl.	r6, r0, 64 - BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL, 63
+	beq	35f
+	/* Set host_ipi in the paca so we exit to the host when interrupted */
+	li	r7, 1
+	stb	r7, HSTATE_HOST_IPI(r13)
+35:
 	andi.	r8, r11, MSR_EE
 	mfspr	r8, SPRN_LPCR
-	/* Insert EXTERNAL_LEVEL bit into LPCR at the MER bit position */
+	/* Insert (EXTERNAL_LEVEL | HV_DOORBELL) bit into LPCR[MER] */
+	or	r0, r0, r6
 	rldimi	r8, r0, LPCR_MER_SH, 63 - LPCR_MER_SH
+	/* LPCR[LPES0] = LPCR[LPES0] & ~HV_DOORBELL */
+	rldic	r6, r6, LPCR_LPES0_SH, 63 - LPCR_LPES0_SH
+	andc	r8, r8, r6
 	mtspr	SPRN_LPCR, r8
 	isync
 	beq	5f
@@ -1422,7 +1432,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 	cmpwi	r12,BOOK3S_INTERRUPT_SYSCALL
 	beq	hcall_try_real_mode
 
-	/* Hypervisor doorbell - exit only if host IPI flag set */
+	/* Hypervisor doorbell - exit only if host IPI or H_DBELL_REQ flag set */
 	cmpwi	r12, BOOK3S_INTERRUPT_H_DOORBELL
 	bne	3f
 BEGIN_FTR_SECTION

@@ -159,6 +159,7 @@ static int kvmppc_book3s_vec2irqprio(unsigned int vec)
 	case 0x980: prio = BOOK3S_IRQPRIO_H_DECREMENTER;	break;
 	case 0xc00: prio = BOOK3S_IRQPRIO_SYSCALL;		break;
 	case 0xd00: prio = BOOK3S_IRQPRIO_DEBUG;		break;
+	case 0xe80: prio = BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL;	break;
 	case 0xf20: prio = BOOK3S_IRQPRIO_ALTIVEC;		break;
 	case 0xf40: prio = BOOK3S_IRQPRIO_VSX;			break;
 	case 0xf60: prio = BOOK3S_IRQPRIO_FAC_UNAVAIL;		break;
@@ -328,6 +329,17 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 		break;
 	case BOOK3S_IRQPRIO_DEBUG:
 		vec = BOOK3S_INTERRUPT_TRACE;
+		break;
+	case BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL:
+		/*
+		 * If we can't inject now then on guest entry we will set
+		 * LPCR[MER] and clear LPCR[LPES0] so when the guest enables
+		 * MSR[EE] a Mediated External Interrupt occurs and we will exit
+		 * to the host so we can try again to inject the interrupt.
+		 */
+		vec = BOOK3S_INTERRUPT_H_DOORBELL;
+		hv_int = 1;
+		deliver = kvmppc_can_deliver_hv_int(vcpu, vec);
 		break;
 	case BOOK3S_IRQPRIO_PERFORMANCE_MONITOR:
 		vec = BOOK3S_INTERRUPT_PERFMON;

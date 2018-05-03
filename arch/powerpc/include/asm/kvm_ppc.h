@@ -182,6 +182,7 @@ extern long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 		struct iommu_group *grp);
 extern void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
 		struct iommu_group *grp);
+extern struct kvm_vcpu *kvmppc_find_vcpu(struct kvm *kvm, int id);
 extern u64 kvmppc_get_lpcr_mask(void);
 extern void kvmppc_update_intr_msr(unsigned long *intr_msr, u64 lpcr);
 extern int kvmppc_switch_mmu_to_hpt(struct kvm *kvm);

@@ -21,6 +21,7 @@
 #include <asm/kvm_book3s_hv_nest.h>
 #include <asm/book3s/64/mmu.h>
 #include <asm/pte-walk.h>
+#include <asm/dbell.h>
 
 #undef DEBUG
 
@@ -1163,6 +1164,84 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	return rc;
 }
 
+static inline int get_msgtype(unsigned long r_val)
+{
+	return (r_val >> 27) & 0x1F;
+}
+
+static inline int get_bcast(unsigned long r_val)
+{
+	return (r_val >> 25) & 0x3;
+}
+
+static inline int get_procid(unsigned long r_val)
+{
+	return r_val & 0xFFFFF;
+}
+
+static int kvmppc_emulate_msgsnd(struct kvm_run *run, struct kvm_vcpu *vcpu,
+				 unsigned int instr)
+{
+	struct kvm_vcpu *tvcpu;
+	int rc = EMULATE_DONE;
+	int msgtype, bcast, procid;
+	int cpu;
+	int rb;
+
+	rb = get_rb(instr);
+	msgtype = get_msgtype(vcpu->arch.gpr[rb]);
+	bcast = get_bcast(vcpu->arch.gpr[rb]);
+	procid = get_procid(vcpu->arch.gpr[rb]);
+
+	if (msgtype != PPC_DBELL_SERVER) {
+		goto out; /* NO-OP */
+	}
+
+#ifdef DEBUG
+	pr_info("%s: [0x%x] msgtype: 0x%x bcast: 0x%x target: 0x%x\n", __func__,
+		vcpu->vcpu_id, msgtype, bcast, procid);
+#endif
+
+	if (bcast == 0x2) {
+		/* Send to all threads on the core */
+		int nthreads = vcpu->kvm->arch.emul_smt_mode;
+		int thr;
+
+		procid &= ~(nthreads - 1);
+		for (thr = 0; thr < nthreads; thr++, procid++) {
+			tvcpu = kvmppc_find_vcpu(vcpu->kvm, procid);
+
+			if (!tvcpu) {
+				continue;
+			}
+
+			cpu = READ_ONCE(tvcpu->arch.thread_cpu);
+			if (cpu >= 0) {
+				kvmppc_set_host_ipi(cpu, 1);
+			}
+			kvmppc_book3s_queue_irqprio(tvcpu,
+					BOOK3S_INTERRUPT_H_DOORBELL);
+			kvmppc_fast_vcpu_kick(tvcpu);
+		}
+	} else {
+		/* Send to single thread (since one thread per sub-core) */
+		tvcpu = kvmppc_find_vcpu(vcpu->kvm, procid);
+
+		if (tvcpu) {
+			cpu = READ_ONCE(tvcpu->arch.thread_cpu);
+			if (cpu >= 0) {
+				kvmppc_set_host_ipi(cpu, 1);
+			}
+			kvmppc_book3s_queue_irqprio(tvcpu,
+					BOOK3S_INTERRUPT_H_DOORBELL);
+			kvmppc_fast_vcpu_kick(tvcpu);
+		}
+	}
+
+out:
+	return rc;
+}
+
 static int kvmppc_emulate_priv_op_31(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				     unsigned int instr)
 {
@@ -1170,8 +1249,12 @@ static int kvmppc_emulate_priv_op_31(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	switch (get_xop(instr)) {
 	case OP_31_XOP_MSGSND:
+		rc = kvmppc_emulate_msgsnd(run, vcpu, instr);
+		break;
 	case OP_31_XOP_MSGCLR:
-		/* XXX TODO */
+		kvmppc_book3s_dequeue_irqprio(vcpu,
+					      BOOK3S_INTERRUPT_H_DOORBELL);
+		rc = EMULATE_DONE;
 		break;
 	case OP_31_XOP_TLBIE:
 		rc = kvmppc_emulate_priv_tlbie(vcpu, instr);
@@ -1190,7 +1273,7 @@ static int kvmppc_emulate_priv_op_31(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* XXX TODO - ONLY HV when GTSE == 0 */
 		break;
 	case OP_31_XOP_MSGSYNC:
-		/* XXX TODO */
+		rc = EMULATE_DONE; /* I think we're good on these */
 		break;
 	default:
 		break;
@@ -1647,6 +1730,14 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 #endif
 		break;
 	case BOOK3S_INTERRUPT_H_DOORBELL:
+		/*
+		 * Either the L1 guest was trying to msgsnd itself and the
+		 * interrupt has been queued for injection on re-entry, or the
+		 * host just wanted the thread back, either way we can resume
+		 * the guest.
+		 */
+		rc = RESUME_GUEST;
+		break;
 	case BOOK3S_INTERRUPT_H_VIRT:
 	case BOOK3S_INTERRUPT_SYSTEM_RESET:
 	case BOOK3S_INTERRUPT_MACHINE_CHECK:
