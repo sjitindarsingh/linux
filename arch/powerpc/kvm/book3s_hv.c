@@ -1356,12 +1356,36 @@ static int kvm_arch_vcpu_ioctl_set_sregs_hv(struct kvm_vcpu *vcpu,
 	return 0;
 }
 
+u64 kvmppc_get_lpcr_mask(void)
+{
+	u64 mask;
+
+	/*
+	 * Userspace can only modify DPFD (default prefetch depth),
+	 * ILE (interrupt little-endian) and TC (translation control).
+	 * On POWER8 and POWER9 userspace can also modify AIL (alt. interrupt loc.).
+	 */
+	mask = LPCR_DPFD | LPCR_ILE | LPCR_TC;
+	if (cpu_has_feature(CPU_FTR_ARCH_207S))
+		mask |= LPCR_AIL;
+	/*
+	 * On POWER9, allow userspace to enable large decrementer for the
+	 * guest, whether or not the host has it enabled.
+	 * Also allow userspace to enable enhanced virtualisation.
+	 */
+	if (cpu_has_feature(CPU_FTR_ARCH_300)) {
+		mask |= LPCR_LD | LPCR_EVIRT;
+	}
+
+	return mask;
+}
+
 static void kvmppc_set_lpcr(struct kvm_vcpu *vcpu, u64 new_lpcr,
-		bool preserve_top32)
+			    bool preserve_top32)
 {
 	struct kvm *kvm = vcpu->kvm;
 	struct kvmppc_vcore *vc = vcpu->arch.vcore;
-	u64 mask;
+	u64 mask = kvmppc_get_lpcr_mask();
 
 	mutex_lock(&kvm->lock);
 	spin_lock(&vc->lock);
@@ -1382,24 +1406,6 @@ static void kvmppc_set_lpcr(struct kvm_vcpu *vcpu, u64 new_lpcr,
 				vcpu->arch.intr_msr &= ~MSR_LE;
 		}
 	}
-
-	/*
-	 * Userspace can only modify DPFD (default prefetch depth),
-	 * ILE (interrupt little-endian) and TC (translation control).
-	 * On POWER8 and POWER9 userspace can also modify AIL (alt. interrupt loc.).
-	 */
-	mask = LPCR_DPFD | LPCR_ILE | LPCR_TC;
-	if (cpu_has_feature(CPU_FTR_ARCH_207S))
-		mask |= LPCR_AIL;
-	/*
-	 * On POWER9, allow userspace to enable large decrementer for the
-	 * guest, whether or not the host has it enabled.
-	 * Also allow userspace to enable enhanced virtualisation.
-	 */
-	if (cpu_has_feature(CPU_FTR_ARCH_300)) {
-		mask |= LPCR_LD | LPCR_EVIRT;
-	}
-
 
 	/* Broken 32-bit version of LPCR must not clear top bits */
 	if (preserve_top32)
