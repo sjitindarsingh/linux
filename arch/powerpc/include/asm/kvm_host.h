@@ -798,6 +798,7 @@ struct kvm_vcpu_arch {
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 	unsigned int shadow_lpid;
 	struct kvm_arch_nested *cur_nest;	/* Nested guest, or NULL */
+	struct kvm_arch_nested_hv_regs hv_regs;
 #endif
 };
 

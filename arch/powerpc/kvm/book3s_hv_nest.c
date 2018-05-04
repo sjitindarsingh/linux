@@ -29,9 +29,11 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				     unsigned int instr)
 {
 	int rs, sprn, rc = EMULATE_FAIL;
+	long val;
 
 	rs = get_rs(instr);
 	sprn = get_sprn(instr);
+	val = vcpu->arch.gpr[rs];
 
 	switch (sprn) {
 	case SPRN_DPDES:
@@ -48,7 +50,13 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* XXX TODO */
 		break;
 	case SPRN_HSPRG0:
+		vcpu->arch.hv_regs.hsprg0 = val;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HSPRG1:
+		vcpu->arch.hv_regs.hsprg1 = val;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HDSISR:
 	case SPRN_HDAR:
 	case SPRN_SPURR:
@@ -91,9 +99,11 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				     unsigned int instr)
 {
 	int rt, sprn, rc = EMULATE_FAIL;
+	ulong *val;
 
 	rt = get_rt(instr);
 	sprn = get_sprn(instr);
+	val = &vcpu->arch.gpr[rt];
 
 	switch (sprn) {
 	case SPRN_DAWR:
@@ -104,7 +114,13 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* XXX TODO */
 		break;
 	case SPRN_HSPRG0:
+		*val = vcpu->arch.hv_regs.hsprg0;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HSPRG1:
+		*val = vcpu->arch.hv_regs.hsprg1;
+		rc = EMULATE_DONE;
+		break;
 	case SPRN_HDSISR:
 	case SPRN_HDAR:
 	case SPRN_HDEC:

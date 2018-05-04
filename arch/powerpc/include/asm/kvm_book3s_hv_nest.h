@@ -14,6 +14,12 @@
 
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 
+/* Registers required to run a nested hypervisor */
+struct kvm_arch_nested_hv_regs {
+	ulong hsprg0;
+	ulong hsprg1;
+};
+
 struct kvm_arch_nested {
 	struct list_head list;
 	struct mutex lock;		/* Lock against modifying the state */
