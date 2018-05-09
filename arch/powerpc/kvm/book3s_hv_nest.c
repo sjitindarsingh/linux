@@ -1008,7 +1008,8 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_HEIR:
-		/* XXX TODO */
+		vcpu->arch.hv_regs.heir = val;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_AMOR:
 		/* The guest can reduce permissions, but can't add them */
@@ -1133,7 +1134,8 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_HEIR:
-		/* XXX TODO */
+		*val = vcpu->arch.hv_regs.heir;
+		rc = EMULATE_DONE;
 		break;
 	case SPRN_AMOR:
 		*val = vcpu->arch.hv_regs.amor.inited ?
@@ -1394,6 +1396,13 @@ void kvmppc_inject_interrupt_hdsi(struct kvm_vcpu *vcpu, u64 flags)
 	vcpu->arch.hv_regs.hdar = vcpu->arch.fault_dar;
 	vcpu->arch.hv_regs.asdr = vcpu->arch.fault_gpa;
 	kvmppc_inject_hv_interrupt(vcpu, BOOK3S_INTERRUPT_H_DATA_STORAGE, 0ULL);
+}
+
+void kvmppc_inject_interrupt_hemul(struct kvm_vcpu *vcpu, u64 flags)
+{
+	/* Use emul_inst not last_inst since last_inst was byte swapped */
+	vcpu->arch.hv_regs.heir = vcpu->arch.emul_inst;
+	kvmppc_inject_hv_interrupt(vcpu, BOOK3S_INTERRUPT_H_EMUL_ASSIST, flags);
 }
 
 /* Used to convert a nested guest real address to a L1 guest real address */
@@ -1731,6 +1740,11 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		pr_info("Page Fault in Nested Guest: 0x%x\n", vcpu->arch.trap);
 #endif
 		break;
+	case BOOK3S_INTERRUPT_H_EMUL_ASSIST:
+		kvmppc_inject_interrupt_hemul(vcpu, vcpu->arch.shregs.msr &
+						    HSRR1_HV_PRIV);
+		rc = RESUME_GUEST;
+		break;
 	case BOOK3S_INTERRUPT_HMI:
 		/* Handled by the host -> resume guest */
 		rc = RESUME_GUEST;
@@ -1752,7 +1766,6 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case BOOK3S_INTERRUPT_MACHINE_CHECK:
 	case BOOK3S_INTERRUPT_EXTERNAL:
 	case BOOK3S_INTERRUPT_PROGRAM:
-	case BOOK3S_INTERRUPT_H_EMUL_ASSIST:
 	case BOOK3S_INTERRUPT_PERFMON:
 	case BOOK3S_INTERRUPT_H_FAC_UNAVAIL:
 	case BOOK3S_INTERRUPT_HV_RM_HARD:

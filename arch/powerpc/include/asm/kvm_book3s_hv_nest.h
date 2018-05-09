@@ -29,6 +29,7 @@ struct kvm_arch_nested_hv_regs {
 	ulong hdar;
 	ulong hsrr0;
 	ulong hsrr1;
+	ulong heir;
 	ulong asdr;
 	/*
 	 * HV registers we only use the nested value of when actually entering
