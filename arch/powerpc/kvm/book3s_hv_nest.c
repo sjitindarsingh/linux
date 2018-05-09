@@ -1731,6 +1731,10 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		pr_info("Page Fault in Nested Guest: 0x%x\n", vcpu->arch.trap);
 #endif
 		break;
+	case BOOK3S_INTERRUPT_HMI:
+		/* Handled by the host -> resume guest */
+		rc = RESUME_GUEST;
+		break;
 	case BOOK3S_INTERRUPT_H_DOORBELL:
 		/*
 		 * Either the L1 guest was trying to msgsnd itself and the
@@ -1749,7 +1753,6 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case BOOK3S_INTERRUPT_EXTERNAL:
 	case BOOK3S_INTERRUPT_PROGRAM:
 	case BOOK3S_INTERRUPT_H_EMUL_ASSIST:
-	case BOOK3S_INTERRUPT_HMI:
 	case BOOK3S_INTERRUPT_PERFMON:
 	case BOOK3S_INTERRUPT_H_FAC_UNAVAIL:
 	case BOOK3S_INTERRUPT_HV_RM_HARD:
