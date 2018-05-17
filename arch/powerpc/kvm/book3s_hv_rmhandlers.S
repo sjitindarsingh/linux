@@ -649,7 +649,7 @@ BEGIN_FTR_SECTION
 	ptesync
 	mtspr	SPRN_SDR1,r6		/* switch to partition page table */
 END_FTR_SECTION_IFCLR(CPU_FTR_ARCH_300)
-	mtspr	SPRN_LPID,r7
+58:	mtspr	SPRN_LPID,r7
 	isync
 
 	/* See if we need to flush the TLB. Hash has to be done in RM */

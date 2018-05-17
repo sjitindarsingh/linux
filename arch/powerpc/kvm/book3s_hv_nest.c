@@ -41,6 +41,36 @@ static struct kvm_arch_nested *kvmppc_find_nested(struct kvm *kvm,
 	return NULL;
 }
 
+/* Must only be called with the kvm lock held */
+static struct kvm_arch_nested *kvmppc_init_vm_nested(struct kvm *kvm,
+						     int lpid)
+{
+	struct kvm_arch_nested *nested;
+
+	if (lpid >= KVMPPC_NR_LPIDS) {
+		pr_err("KVM: lpid (%d) exceeds n.o. supported lpids (%d)\n",
+		       lpid, KVMPPC_NR_LPIDS);
+		return NULL;
+	}
+
+	nested = kzalloc(sizeof(*nested), GFP_KERNEL);
+	if (!nested) {
+		pr_err("KVM_HV_NEST: Unable to allocate memory\n");
+		return NULL; /* ENOMEM -> Not much we can do though */
+	}
+
+	mutex_init(&nested->lock);
+	nested->lpid = 0;		/* Will be allocated on final entry */
+	nested->host_lpid = kvm->arch.lpid;
+	nested->shadow_lpid = lpid;
+	nested->shadow_pgtable = NULL;
+	nested->process_table = 0ULL;
+
+	list_add(&nested->list, &kvm->arch.nested);
+
+	return nested;
+}
+
 /* Must be called with nested lock held */
 static void kvmppc_setup_partition_table_nested(struct kvm_arch_nested *nested)
 {
@@ -284,6 +314,167 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 	}
 
 	return EMULATE_DONE;
+}
+
+static struct kvm_arch_nested *kvmppc_find_init_vm_nested(struct kvm_vcpu *vcpu,
+							  unsigned int lpid)
+{
+	struct kvm_arch_nested *nested;
+
+	mutex_lock(&vcpu->kvm->lock);
+
+	nested = kvmppc_find_nested(vcpu->kvm, lpid);
+	if (!nested) {
+		nested = kvmppc_init_vm_nested(vcpu->kvm, lpid);
+	}
+
+	mutex_unlock(&vcpu->kvm->lock);
+	return nested;
+}
+
+static int kvmppc_find_alloc_nest_lpid(struct kvm_vcpu *vcpu,
+				       struct kvm_arch_nested *nested)
+{
+	long rc;
+
+	/* We need an lpid - try to find a free one */
+	rc = kvmppc_alloc_lpid();
+	if (rc >= 0) {
+		nested->lpid = rc;
+		goto lpid_found;
+	}
+
+	/* For now we don't handle taking an LPID off someone else */
+	pr_err("KVM: No free lpids available to run nested guest\n");
+	return rc;
+
+lpid_found:	/* New (or reused) lpid - setup the partition table entry */
+#ifdef DEBUG
+	pr_info("KVM: Allocated nested lpid %d\n", nested->lpid);
+#endif
+	kvmppc_setup_partition_table_nested(nested);
+	return 0;
+}
+
+static inline void reg_switch(ulong *val1, ulong *val2)
+{
+	ulong tmp;
+
+	tmp = *val1;
+	*val1 = *val2;
+	*val2 = tmp;
+}
+
+static void hv_reg_switch(struct hv_reg *hv_reg, ulong *reg)
+{
+	if (!hv_reg->inited) {
+		hv_reg->inited = 1;
+		hv_reg->val = *reg;
+		return;
+	}
+
+	reg_switch(&hv_reg->val, reg);
+}
+
+static void kvmppc_nested_reg_entry_switch(struct kvm_vcpu *vcpu)
+{
+	hv_reg_switch(&vcpu->arch.hv_regs.dawr, &vcpu->arch.dawr);
+	hv_reg_switch(&vcpu->arch.hv_regs.ciabr, &vcpu->arch.ciabr);
+	hv_reg_switch(&vcpu->arch.hv_regs.dawrx, &vcpu->arch.dawrx);
+	hv_reg_switch(&vcpu->arch.hv_regs.hfscr, &vcpu->arch.hfscr);
+	/* Can do this since there's only one thread per vcore on P9 */
+	if (vcpu->arch.hv_regs.lpcr.inited) {
+		u64 mask = kvmppc_get_lpcr_mask();
+		ulong tmp = vcpu->arch.vcore->lpcr;
+		vcpu->arch.vcore->lpcr &= ~mask;
+		vcpu->arch.vcore->lpcr |= vcpu->arch.hv_regs.lpcr.val & mask;
+		vcpu->arch.hv_regs.lpcr.val = tmp;
+	} else {
+		vcpu->arch.hv_regs.lpcr.inited = 1;
+		vcpu->arch.hv_regs.lpcr.val = vcpu->arch.vcore->lpcr;
+	}
+	hv_reg_switch(&vcpu->arch.hv_regs.pcr, &vcpu->arch.vcore->pcr);
+	hv_reg_switch(&vcpu->arch.hv_regs.amor, &vcpu->arch.amor);
+
+	if (vcpu->arch.vcore->dpdes) {
+		/* There is still one pending for the L1 Guest */
+		vcpu->arch.doorbell_request = 1;
+	}
+	vcpu->arch.vcore->dpdes = vcpu->arch.hv_regs.nested_dpdes;
+
+	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
+}
+
+/*
+ * This is the final transition into the nested guest, we need to:
+ * - Allocate an LPID if not already done
+ * - Setup a partition table if not already done
+ * - Update the nest state so the kvm entry code uses the nest lpid
+ * - Perform the final switch of a few registers
+ * - Update the vcpu pc and msr to that of the nested guest
+ */
+static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
+{
+	struct kvm_arch_nested *nested;
+	int rc;
+
+	if (vcpu->arch.hv_regs.hsrr1 & MSR_HV) {
+		/*
+		 * If hrfid to HV state then don't switch the regs which would
+		 * only take effect in non-HV state.
+		 */
+		goto no_switch;
+	}
+
+	nested = kvmppc_find_init_vm_nested(vcpu, vcpu->arch.shadow_lpid);
+	if (!nested) {
+		/* ENOMEM -> not much we can do, let the guest try again... */
+		return EMULATE_DONE;
+	}
+
+	mutex_lock(&nested->lock);
+
+	/* Find the process table (if required) */
+	if (!nested->process_table) {
+		rc = kvmppc_find_update_process_table(vcpu->kvm, nested);
+		if (rc) {
+			goto fail_unlock;
+		}
+	}
+
+	/* Init the shadow page table (if required) */
+	if (!nested->shadow_pgtable) {
+		rc = kvmppc_init_pgtable_radix(vcpu->kvm,
+					       &nested->shadow_pgtable);
+		if (rc) {
+			goto fail_unlock;
+		}
+	}
+
+	/* Find or allocate an lpid (if required) */
+	if (!nested->lpid) {
+		rc = kvmppc_find_alloc_nest_lpid(vcpu, nested);
+		if (rc) {
+			goto fail_unlock;
+		}
+	}
+
+	nested->running_vcpus += 1;
+	mutex_unlock(&nested->lock);
+
+	kvmppc_nested_reg_entry_switch(vcpu);
+
+	vcpu->arch.cur_nest = nested;
+
+no_switch:
+	vcpu->arch.pc = vcpu->arch.hv_regs.hsrr0;
+	vcpu->arch.shregs.msr = vcpu->arch.hv_regs.hsrr1 & ~MSR_HV;
+
+	return EMULATE_DONE;
+
+fail_unlock:
+	mutex_unlock(&nested->lock);
+	return EMULATE_FAIL;
 }
 
 static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
@@ -620,9 +811,10 @@ static int kvmppc_emulate_priv_op(struct kvm_run *run, struct kvm_vcpu *vcpu,
 {
 	int rc = EMULATE_FAIL;
 
-	switch (instr) {
+	/* The instruction image isn't pulled out correctly, so mask it */
+	switch (instr & 0xFF00FFFF) {
 	case PPC_INST_HRFID:
-		/* XXX TODO */
+		rc = kvmppc_enter_nested(vcpu);
 		break;
 	default:
 		break;

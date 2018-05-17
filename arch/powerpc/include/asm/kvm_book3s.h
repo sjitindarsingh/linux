@@ -190,6 +190,7 @@ extern int kvmppc_book3s_radix_page_fault(struct kvm_run *run,
 			unsigned long ea, unsigned long dsisr);
 extern int kvmppc_mmu_radix_xlate(struct kvm_vcpu *vcpu, gva_t eaddr,
 			struct kvmppc_pte *gpte, bool data, bool iswrite);
+extern int kvmppc_init_pgtable_radix(struct kvm *kvm, pgd_t **pgtable);
 extern int kvmppc_init_vm_radix(struct kvm *kvm);
 extern void kvmppc_free_radix(struct kvm *kvm);
 extern int kvmppc_radix_init(void);

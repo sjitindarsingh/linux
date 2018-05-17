@@ -56,6 +56,7 @@
 #if defined(CONFIG_KVM) && defined(CONFIG_PPC_BOOK3S)
 #include <asm/kvm_book3s.h>
 #include <asm/kvm_ppc.h>
+#include <asm/kvm_book3s_hv_nest.h>
 #endif
 
 #ifdef CONFIG_PPC32

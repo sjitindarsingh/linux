@@ -753,6 +753,7 @@ static void kvmppc_create_dtl_entry(struct kvm_vcpu *vcpu,
 /* See if there is a doorbell interrupt pending for a vcpu */
 static bool kvmppc_doorbell_pending(struct kvm_vcpu *vcpu)
 {
+	bool ret;
 	int thr;
 	struct kvmppc_vcore *vc;
 
@@ -767,7 +768,11 @@ static bool kvmppc_doorbell_pending(struct kvm_vcpu *vcpu)
 	smp_rmb();
 	vc = vcpu->arch.vcore;
 	thr = vcpu->vcpu_id - vc->first_vcpuid;
-	return !!(vc->dpdes & (1 << thr));
+	ret = !!(vc->dpdes & (1 << thr));
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	ret |= !!(vcpu->arch.hv_regs.nested_dpdes);
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
+	return ret;
 }
 
 static bool kvmppc_power8_compatible(struct kvm_vcpu *vcpu)
@@ -1385,6 +1390,15 @@ u64 kvmppc_get_lpcr_mask(void)
 	return mask;
 }
 
+void kvmppc_update_intr_msr(unsigned long *intr_msr, u64 lpcr)
+{
+	if (lpcr & LPCR_ILE) {
+		*intr_msr |= MSR_LE;
+	} else {
+		*intr_msr &= ~MSR_LE;
+	}
+}
+
 static void kvmppc_set_lpcr(struct kvm_vcpu *vcpu, u64 new_lpcr,
 			    bool preserve_top32)
 {
@@ -1405,10 +1419,7 @@ static void kvmppc_set_lpcr(struct kvm_vcpu *vcpu, u64 new_lpcr,
 		kvm_for_each_vcpu(i, vcpu, kvm) {
 			if (vcpu->arch.vcore != vc)
 				continue;
-			if (new_lpcr & LPCR_ILE)
-				vcpu->arch.intr_msr |= MSR_LE;
-			else
-				vcpu->arch.intr_msr &= ~MSR_LE;
+			kvmppc_update_intr_msr(&vcpu->arch.intr_msr, new_lpcr);
 		}
 	}
 
@@ -3038,6 +3049,21 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 	for (sub = 0; sub < core_info.n_subcores; ++sub)
 		spin_unlock(&core_info.vc[sub]->lock);
 
+	/* Switch to Guest LPID (if radix) */
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	if (local_paca->kvm_hstate.kvm_vcpu &&
+	    local_paca->kvm_hstate.kvm_vcpu->arch.cur_nest) {
+		/*
+		 * Switch to the nested guest LPID.
+		 * NOTE: We don't check kvm->arch.need_tlb_flush like below as
+		 * this tracks the need to flush the L1 guest LPID, which is
+		 * not what we've switched to here. If the nest LPID needs
+		 * flushing the L1 entry path should have done it.
+		 */
+		mtspr(SPRN_LPID,
+		      local_paca->kvm_hstate.kvm_vcpu->arch.cur_nest->lpid);
+	} else
+#endif
 	if (kvm_is_radix(vc->kvm)) {
 		int tmp = pcpu;
 
