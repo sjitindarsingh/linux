@@ -1416,6 +1416,11 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 	cmpwi	r12,BOOK3S_INTERRUPT_SYSCALL
 	beq	hcall_try_real_mode
 
+#ifdef CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE
+	/* Doorbell (can get if running nested) exit only if host IPI flag set*/
+	cmpwi   r12, BOOK3S_INTERRUPT_DOORBELL
+	beq	66f
+#endif /* CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE */
 	/* Hypervisor doorbell - exit only if host IPI flag set */
 	cmpwi	r12, BOOK3S_INTERRUPT_H_DOORBELL
 	bne	3f
@@ -1423,7 +1428,7 @@ BEGIN_FTR_SECTION
 	PPC_MSGSYNC
 	lwsync
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
-	lbz	r0, HSTATE_HOST_IPI(r13)
+66:	lbz	r0, HSTATE_HOST_IPI(r13)
 	cmpwi	r0, 0
 	beq	4f
 	b	guest_exit_cont

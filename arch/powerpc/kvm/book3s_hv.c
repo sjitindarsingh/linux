@@ -1119,6 +1119,9 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		vcpu->stat.dec_exits++;
 		r = RESUME_GUEST;
 		break;
+#ifdef CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE
+	case BOOK3S_INTERRUPT_DOORBELL:
+#endif /* CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE */
 	case BOOK3S_INTERRUPT_EXTERNAL:
 	case BOOK3S_INTERRUPT_H_DOORBELL:
 	case BOOK3S_INTERRUPT_H_VIRT:
@@ -2693,6 +2696,7 @@ static void set_irq_happened(int trap)
 	case BOOK3S_INTERRUPT_EXTERNAL:
 		local_paca->irq_happened |= PACA_IRQ_EE;
 		break;
+	case BOOK3S_INTERRUPT_DOORBELL:
 	case BOOK3S_INTERRUPT_H_DOORBELL:
 		local_paca->irq_happened |= PACA_IRQ_DBELL;
 		break;
