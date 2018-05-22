@@ -718,8 +718,6 @@ static inline void reg_switch(ulong *val1, ulong *val2)
 static void hv_reg_switch(struct hv_reg *hv_reg, ulong *reg)
 {
 	if (!hv_reg->inited) {
-		hv_reg->inited = 1;
-		hv_reg->val = *reg;
 		return;
 	}
 
@@ -733,16 +731,7 @@ static void kvmppc_nested_reg_entry_switch(struct kvm_vcpu *vcpu)
 	hv_reg_switch(&vcpu->arch.hv_regs.dawrx, &vcpu->arch.dawrx);
 	hv_reg_switch(&vcpu->arch.hv_regs.hfscr, &vcpu->arch.hfscr);
 	/* Can do this since there's only one thread per vcore on P9 */
-	if (vcpu->arch.hv_regs.lpcr.inited) {
-		u64 mask = kvmppc_get_lpcr_mask();
-		ulong tmp = vcpu->arch.vcore->lpcr;
-		vcpu->arch.vcore->lpcr &= ~mask;
-		vcpu->arch.vcore->lpcr |= vcpu->arch.hv_regs.lpcr.val & mask;
-		vcpu->arch.hv_regs.lpcr.val = tmp;
-	} else {
-		vcpu->arch.hv_regs.lpcr.inited = 1;
-		vcpu->arch.hv_regs.lpcr.val = vcpu->arch.vcore->lpcr;
-	}
+	hv_reg_switch(&vcpu->arch.hv_regs.lpcr, &vcpu->arch.vcore->lpcr);
 	hv_reg_switch(&vcpu->arch.hv_regs.pcr, &vcpu->arch.vcore->pcr);
 	hv_reg_switch(&vcpu->arch.hv_regs.amor, &vcpu->arch.amor);
 
@@ -823,20 +812,14 @@ fail_unlock:
 
 static void kvmppc_nested_reg_exit_switch(struct kvm_vcpu *vcpu)
 {
-	reg_switch(&vcpu->arch.hv_regs.dawr.val, &vcpu->arch.dawr);
-	reg_switch(&vcpu->arch.hv_regs.ciabr.val, &vcpu->arch.ciabr);
-	reg_switch(&vcpu->arch.hv_regs.dawrx.val, &vcpu->arch.dawrx);
-	reg_switch(&vcpu->arch.hv_regs.hfscr.val, &vcpu->arch.hfscr);
+	hv_reg_switch(&vcpu->arch.hv_regs.dawr, &vcpu->arch.dawr);
+	hv_reg_switch(&vcpu->arch.hv_regs.ciabr, &vcpu->arch.ciabr);
+	hv_reg_switch(&vcpu->arch.hv_regs.dawrx, &vcpu->arch.dawrx);
+	hv_reg_switch(&vcpu->arch.hv_regs.hfscr, &vcpu->arch.hfscr);
 	/* Can do this since there's only one thread per vcore on P9 */
-	if (vcpu->arch.hv_regs.lpcr.inited) {
-		u64 mask = kvmppc_get_lpcr_mask();
-		ulong tmp = vcpu->arch.hv_regs.lpcr.val;
-		vcpu->arch.hv_regs.lpcr.val &= ~mask;
-		vcpu->arch.hv_regs.lpcr.val |= vcpu->arch.vcore->lpcr & mask;
-		vcpu->arch.vcore->lpcr = tmp;
-	}
-	reg_switch(&vcpu->arch.hv_regs.pcr.val, &vcpu->arch.vcore->pcr);
-	reg_switch(&vcpu->arch.hv_regs.amor.val, &vcpu->arch.amor);
+	hv_reg_switch(&vcpu->arch.hv_regs.lpcr, &vcpu->arch.vcore->lpcr);
+	hv_reg_switch(&vcpu->arch.hv_regs.pcr, &vcpu->arch.vcore->pcr);
+	hv_reg_switch(&vcpu->arch.hv_regs.amor, &vcpu->arch.amor);
 
 	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
 }
@@ -974,13 +957,17 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_LPCR:
 		{
+			/* We also let LPCR_MER be set */
+			u64 mask = kvmppc_get_lpcr_mask() | LPCR_MER;
 			if (!(val & LPCR_HR)) {
 				/* We only support radix nested guests */
 				pr_err("KVM: nested HV running hpt guest\n");
 				break;
 			}
 
-			vcpu->arch.hv_regs.lpcr.val = val;
+			vcpu->arch.hv_regs.lpcr.val = vcpu->arch.vcore->lpcr &
+						      ~mask;
+			vcpu->arch.hv_regs.lpcr.val |= val & mask;
 			vcpu->arch.hv_regs.lpcr.inited = 1;
 			rc = EMULATE_DONE;
 			break;
