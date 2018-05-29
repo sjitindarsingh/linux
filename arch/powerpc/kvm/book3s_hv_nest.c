@@ -1754,12 +1754,16 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		kvmppc_book3s_queue_irqprio(vcpu, BOOK3S_INTERRUPT_H_VIRT);
 		rc = EMULATE_DONE;
 		break;
+	case BOOK3S_INTERRUPT_H_FAC_UNAVAIL:
+		kvmppc_inject_hv_interrupt(vcpu, BOOK3S_INTERRUPT_H_FAC_UNAVAIL,
+					   0ULL);
+		rc = EMULATE_DONE;
+		break;
 	case BOOK3S_INTERRUPT_SYSTEM_RESET:
 	case BOOK3S_INTERRUPT_MACHINE_CHECK:
 	case BOOK3S_INTERRUPT_EXTERNAL:
 	case BOOK3S_INTERRUPT_PROGRAM:
 	case BOOK3S_INTERRUPT_PERFMON:
-	case BOOK3S_INTERRUPT_H_FAC_UNAVAIL:
 	case BOOK3S_INTERRUPT_HV_RM_HARD:
 		/* XXX TODO */
 	default:
