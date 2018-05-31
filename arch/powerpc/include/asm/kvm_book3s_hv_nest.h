@@ -55,10 +55,62 @@ struct kvm_arch_nested {
 	u64 process_table;              /* process table entry for this guest */
 };
 
+/*
+ * Used to store the reverse mappings of nested guest real addresses
+ * The unsigned long rmap value in the memslot->arch is used to store a pointer
+ * to a struct list_head of one of these.
+ */
+struct kvm_nest_rmap {
+	struct list_head list;
+	unsigned int lpid;
+	unsigned long pfn;
+	unsigned long nest_gpa;
+	unsigned long npages;
+};
+
+#define KVMPPC_NEST_RMAP_LOCK_BIT	0
+#define KVMPPC_NEST_RMAP_LOCK_MASK	~(1UL << KVMPPC_NEST_RMAP_LOCK_BIT)
+
+static inline void lock_rmap_nest(unsigned long *rmap)
+{
+	do {
+		while (test_bit(KVMPPC_NEST_RMAP_LOCK_BIT, rmap))
+			cpu_relax();
+	} while (test_and_set_bit_lock(KVMPPC_NEST_RMAP_LOCK_BIT, rmap));
+}
+
+static inline void unlock_rmap_nest(unsigned long *rmap)
+{
+	 __clear_bit_unlock(KVMPPC_NEST_RMAP_LOCK_BIT, rmap);
+}
+
+static inline struct list_head *get_rmap_nest(unsigned long *rmap)
+{
+	unsigned long val;
+
+	val = *rmap & KVMPPC_NEST_RMAP_LOCK_MASK;
+
+	return (struct list_head *) val;
+}
+
+static inline void set_rmap_nest(unsigned long *rmap, struct list_head *val)
+{
+	*rmap &= ~KVMPPC_NEST_RMAP_LOCK_MASK;
+	*rmap |= (((unsigned long) val) & KVMPPC_NEST_RMAP_LOCK_MASK);
+}
+
+int kvmppc_insert_nest_rmap_entry(unsigned long *rmap,
+				  struct kvm_nest_rmap *rmap_entry);
 unsigned long kvmppc_radix_remove_nest_pte(struct kvm *kvm, pte_t *ptep,
 					   unsigned long addr,
 					   unsigned int shift,
 					   unsigned int lpid);
+void kvmppc_clear_nest_rmap(struct kvm *kvm,
+			    struct kvm_memory_slot *memslot,
+			    unsigned long base_gfn,
+			    unsigned long npages);
+void kvmppc_clear_all_nest_rmap(struct kvm *kvm,
+				struct kvm_memory_slot *memslot);
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu);
 int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			unsigned int instr);

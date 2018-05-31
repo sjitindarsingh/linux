@@ -208,7 +208,8 @@ extern unsigned long kvmppc_radix_update_pte(struct kvm *kvm, pte_t *ptep,
 					     unsigned int shift);
 extern int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			     unsigned long gpa, unsigned int level,
-			     unsigned long mmu_seq, void *nested);
+			     unsigned long mmu_seq, void *nested,
+			     unsigned long *rmap, void *rmap_entry);
 extern void kvmppc_hv_handle_set_rc(struct kvm *kvm, pgd_t *pgtable,
 				    unsigned long *dsisr, unsigned long gpa);
 extern int kvmppc_book3s_handle_radix_page_fault(struct kvm_vcpu *vcpu,

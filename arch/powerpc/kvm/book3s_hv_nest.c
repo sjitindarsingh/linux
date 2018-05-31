@@ -24,6 +24,8 @@
 
 #undef DEBUG
 
+static struct kvm_arch_nested *kvmppc_find_nested(struct kvm *kvm, int lpid);
+
 unsigned long kvmppc_radix_remove_nest_pte(struct kvm *kvm, pte_t *ptep,
 					   unsigned long addr,
 					   unsigned int shift,
@@ -37,6 +39,211 @@ unsigned long kvmppc_radix_remove_nest_pte(struct kvm *kvm, pte_t *ptep,
 	}
 
 	return old;
+}
+
+/* Must be called with rmap lock held */
+static int kvmppc_test_and_replace_nest_rmap(struct kvm_nest_rmap *old,
+					     struct kvm_nest_rmap *new)
+{
+	/* Does this rmap entry belong to this guest? */
+	if (old->lpid == new->lpid) {
+		/* Same page could be mapped at multiple guest addrs */
+		if (old->nest_gpa == new->nest_gpa) {
+			old->pfn = new->pfn;
+			old->npages = new->npages;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+int kvmppc_insert_nest_rmap_entry(unsigned long *rmap,
+				  struct kvm_nest_rmap *rmap_entry)
+{
+	int rc = 0;
+	struct kvm_nest_rmap *nest_rmap;
+	struct list_head *head;
+
+	lock_rmap_nest(rmap);
+	head = get_rmap_nest(rmap);
+	if (!head) {
+		/* List is empty -> create a head */
+		head = kzalloc(sizeof(*head), GFP_KERNEL);
+		if (!head) {
+			rc = -ENOMEM;
+			goto out_unlock;
+		}
+		INIT_LIST_HEAD(head);
+		set_rmap_nest(rmap, head);
+	} else {
+		struct kvm_nest_rmap *cur, *n;
+
+		/*
+		 * Already a list, iterate over the list and try to reuse an
+		 * entry, otherwise add a new entry.
+		*/
+		list_for_each_entry_safe(cur, n, head, list) {
+			if (kvmppc_test_and_replace_nest_rmap(cur, rmap_entry)) {
+				/* We replaced an existing entry */
+				goto out_unlock;
+			}
+		}
+	}
+
+	nest_rmap = kzalloc(sizeof(*nest_rmap), GFP_KERNEL);
+	if (!nest_rmap) {
+		rc = -ENOMEM;
+		goto out_free;
+	}
+	memcpy(nest_rmap, rmap_entry, sizeof(*nest_rmap));
+
+	/* Add ourselves to the list */
+	list_add(&nest_rmap->list, head);
+	goto out_unlock;
+
+out_free:
+	set_rmap_nest(rmap, NULL);
+	kfree(head);
+out_unlock:
+	unlock_rmap_nest(rmap);
+	return rc;
+}
+
+/*
+ * Remove an rmap entry, and invalidate and tlbie the pte if appropriate
+ * Must be called with rmap lock held
+ * NOTE: caller must free and NULL the head pointer if removing last entry
+ */
+static void kvmppc_remove_nest_rmap(struct kvm *kvm, struct kvm_nest_rmap *rmap)
+{
+	struct kvm_arch_nested *nested;
+	pgd_t *pgtable;
+	pte_t *ptep;
+	unsigned int shift;
+
+	nested = kvmppc_find_nested(kvm, rmap->lpid);
+	if (!nested) {
+		goto out;
+	}
+
+	mutex_lock(&nested->lock);
+	pgtable = nested->shadow_pgtable;
+	if (!pgtable) {
+		goto out_unlock;
+	}
+	/* find the pte */
+	ptep = __find_linux_pte(pgtable, rmap->nest_gpa, NULL, &shift);
+	/* Don't spuriously invalidate ptes if the pfn has changed */
+	if (ptep && pte_present(*ptep) && (pte_pfn(*ptep) == rmap->pfn)) {
+		kvmppc_radix_remove_nest_pte(kvm, ptep, rmap->nest_gpa, shift,
+					     nested->lpid);
+	}
+
+out_unlock:
+	mutex_unlock(&nested->lock);
+out:
+	/* remove this from the list */
+	list_del(&rmap->list);
+	kfree(rmap);
+}
+
+/*
+ * Walk the rmap list for the given gfn of the memslot and remove entries which
+ * map a number of pages greater than or equal to npages.
+ * Must be called with rmap lock held
+ */
+static void kvmppc_remove_nest_rmap_list(struct kvm *kvm,
+					 struct kvm_memory_slot *memslot,
+					 unsigned long gfn,
+					 unsigned long npages)
+{
+	struct kvm_nest_rmap *cur, *n;
+	struct list_head *head;
+	unsigned long *rmap;
+
+	if (gfn < memslot->base_gfn || gfn >= (memslot->base_gfn +
+					       memslot->npages)) {
+		pr_err("KVM: %s gfn: 0x%.16lx out of memslot range\n",
+				__func__, gfn);
+	}
+
+	rmap = &memslot->arch.rmap[gfn - memslot->base_gfn];
+
+	lock_rmap_nest(rmap);
+
+	head = get_rmap_nest(rmap);
+	if (!head) {
+		goto continue_unlock;
+	}
+
+	/* Remove all relevant entries except the head */
+	list_for_each_entry_safe(cur, n, head, list) {
+		if (cur->npages >= npages) {
+			kvmppc_remove_nest_rmap(kvm, cur);
+		}
+	}
+
+	/* Is the list empty now? */
+	if (list_empty(head)) {
+		/* Remove the head pointer */
+		set_rmap_nest(rmap, NULL);
+		kfree(head);
+	}
+
+continue_unlock:
+	unlock_rmap_nest(rmap);
+}
+
+/*
+ * Clear the rmap from base_gfn -> base_gfn + npages for this memslot
+ * This invalidates ptes and preforms any required tlbies
+ */
+void kvmppc_clear_nest_rmap(struct kvm *kvm,
+			    struct kvm_memory_slot *memslot,
+			    unsigned long base_gfn,
+			    unsigned long npages)
+{
+	unsigned long mask, gfn, end_gfn = base_gfn + npages;
+
+	for (gfn = base_gfn; gfn < end_gfn; gfn++) {
+		kvmppc_remove_nest_rmap_list(kvm, memslot, gfn, 1);
+	}
+
+	/* We need to check for 1G or 2M pages which encompass us */
+	/* Could there be 1G pages? */
+	if (memslot->npages > (PUD_SHIFT - PAGE_SHIFT)) {
+		mask = (1UL << (PUD_SHIFT - PAGE_SHIFT)) - 1;
+		if (base_gfn & mask) {
+			/* remove any 1G entries which encompass us */
+			kvmppc_remove_nest_rmap_list(kvm, memslot,
+						     base_gfn & ~mask,
+						     PUD_SHIFT - PAGE_SHIFT);
+		}
+		/* else -> we were on a 1G boundary, nothing to do */
+	}
+	/* Could there be 2M pages? */
+	if (memslot->npages > (PMD_SHIFT - PAGE_SHIFT)) {
+		mask = (1UL << (PMD_SHIFT - PAGE_SHIFT)) - 1;
+		if (base_gfn & mask) {
+			/* remove any 2M entries which encompass us */
+			kvmppc_remove_nest_rmap_list(kvm, memslot,
+						     base_gfn & ~mask,
+						     PMD_SHIFT - PAGE_SHIFT);
+		}
+		/* else -> we were on a 2M boundary, nothing to do */
+	}
+}
+
+/*
+ * Clear the whole rmap of this memslot
+ * This invalidates ptes and preforms any required tlbies
+ */
+void kvmppc_clear_all_nest_rmap(struct kvm *kvm,
+				struct kvm_memory_slot *memslot)
+{
+	kvmppc_clear_nest_rmap(kvm, memslot, memslot->base_gfn,
+			       memslot->npages);
 }
 
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
@@ -1026,6 +1233,7 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 					 PGDIR_SHIFT };
 	struct kvm *kvm = vcpu->kvm;
 	struct kvm_memory_slot *memslot;
+	struct kvm_nest_rmap rmap_entry;
 	unsigned long gpa, fault_gpa, gfn, mask, perm = 0UL;
 	unsigned long mmu_seq;
 	unsigned long npages, base_gfn;
@@ -1199,7 +1407,13 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 
 	shift = p9_radix_level_shifts[level]; /* what size pte did we insert */
 	mask = ~((1UL << shift) - 1);
+	base_gfn = (gpa & mask) >> PAGE_SHIFT;
 	fault_gpa &= mask;
+	npages = 1ULL << (shift - PAGE_SHIFT);
+	if (base_gfn < memslot->base_gfn) {
+		pr_err("KVM: %s gfn 0x%.16lx out of memslot range\n",
+				__func__, base_gfn);
+	}
 
 	/*
 	 * The only way this can happen is if another thread freed the page
@@ -1208,15 +1422,18 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 	 */
 	WARN_ON(!nested->shadow_pgtable);
 
+	rmap_entry.lpid = nested->shadow_lpid;
+	rmap_entry.pfn = pte_pfn(pte);
+	rmap_entry.nest_gpa = fault_gpa;
+	rmap_entry.npages = npages;
 	/* Insert the pte into our shadow_pgtable */
 	rc = kvmppc_create_pte(kvm, nested->shadow_pgtable, pte,
-			       fault_gpa, level, mmu_seq, nested);
-	mutex_unlock(&nested->lock);
-	if (rc) {
-		if (rc == -EAGAIN) {
-			/* Go back to the guest so it can try again */
-			rc = RESUME_GUEST;
-		}
+			       fault_gpa, level, mmu_seq, nested,
+			       &memslot->arch.rmap[base_gfn - memslot->base_gfn]
+			       , &rmap_entry);
+	if (rc == -EAGAIN) {
+		/* Go back to the guest so it can try again */
+		rc = RESUME_GUEST;
 	}
 
 	return rc;

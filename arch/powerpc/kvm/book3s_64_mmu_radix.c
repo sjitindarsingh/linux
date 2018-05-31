@@ -265,20 +265,33 @@ static void kvmppc_pmd_free(pmd_t *pmdp)
 
 static void kvmppc_unmap_pte(struct kvm *kvm, pte_t *pte,
 			     unsigned long gpa, unsigned int shift)
-
 {
-	unsigned long page_size = 1ul << shift;
+	unsigned long gfn = gpa >> PAGE_SHIFT;
+	struct kvm_memory_slot *memslot;
 	unsigned long old;
 
 	old = kvmppc_radix_update_pte(kvm, pte, ~0UL, 0, gpa, shift);
 	kvmppc_radix_tlbie_page(kvm, gpa, shift);
-	if (old & _PAGE_DIRTY) {
-		unsigned long gfn = gpa >> PAGE_SHIFT;
-		struct kvm_memory_slot *memslot;
 
-		memslot = gfn_to_memslot(kvm, gfn);
-		if (memslot && memslot->dirty_bitmap)
-			kvmppc_update_dirty_map(memslot, gfn, page_size);
+	memslot = gfn_to_memslot(kvm, gfn);
+
+	if (!memslot) {
+		return;
+	}
+
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	{
+		unsigned long mask = ~((1UL << shift) - 1);
+
+		kvmppc_clear_nest_rmap(kvm, memslot, (gpa & mask) >> PAGE_SHIFT
+				       , 1UL << (shift - PAGE_SHIFT));
+	}
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
+
+	if (old & _PAGE_DIRTY && memslot->dirty_bitmap) {
+		unsigned long page_size = 1ul << shift;
+
+		kvmppc_update_dirty_map(memslot, gfn, page_size);
 	}
 }
 
@@ -426,7 +439,8 @@ static void kvmppc_unmap_free_pud_entry_table(struct kvm *kvm, pud_t *pud,
 
 int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 		      unsigned long gpa, unsigned int level,
-		      unsigned long mmu_seq, void *nested)
+		      unsigned long mmu_seq, void *nested,
+		      unsigned long *rmap, void *rmap_entry)
 {
 	pgd_t *pgd;
 	pud_t *pud, *new_pud = NULL;
@@ -513,6 +527,11 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			kvmppc_unmap_free_pud_entry_table(kvm, pud, gpa);
 		}
 		kvmppc_radix_set_pte_at(kvm, gpa, (pte_t *)pud, pte);
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		if (nested)
+			kvmppc_insert_nest_rmap_entry(rmap,
+					(struct kvm_nest_rmap *)rmap_entry);
+#endif
 		ret = 0;
 		goto out_unlock;
 	}
@@ -571,6 +590,11 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			kvmppc_unmap_free_pmd_entry_table(kvm, pmd, gpa);
 		}
 		kvmppc_radix_set_pte_at(kvm, gpa, pmdp_ptep(pmd), pte);
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		if (nested)
+			kvmppc_insert_nest_rmap_entry(rmap,
+					(struct kvm_nest_rmap *)rmap_entry);
+#endif
 		ret = 0;
 		goto out_unlock;
 	}
@@ -595,6 +619,11 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 		goto out_unlock;
 	}
 	kvmppc_radix_set_pte_at(kvm, gpa, ptep, pte);
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	if (nested)
+		kvmppc_insert_nest_rmap_entry(rmap,
+					(struct kvm_nest_rmap *)rmap_entry);
+#endif
 	ret = 0;
 
  out_unlock:
@@ -740,7 +769,7 @@ int kvmppc_book3s_handle_radix_page_fault(struct kvm_vcpu *vcpu,
 
 	/* Allocate space in the tree and write the PTE */
 	rc = kvmppc_create_pte(kvm, kvm->arch.pgtable, pte, gpa, level,
-			       mmu_seq, NULL);
+			       mmu_seq, NULL, 0, NULL);
 	if (inserted_pte) {
 		*inserted_pte = pte;
 	}
@@ -846,19 +875,10 @@ int kvm_unmap_radix(struct kvm *kvm, struct kvm_memory_slot *memslot,
 	pte_t *ptep;
 	unsigned long gpa = gfn << PAGE_SHIFT;
 	unsigned int shift;
-	unsigned long old;
 
 	ptep = __find_linux_pte(kvm->arch.pgtable, gpa, NULL, &shift);
 	if (ptep && pte_present(*ptep)) {
-		old = kvmppc_radix_update_pte(kvm, ptep, ~0UL, 0,
-					      gpa, shift);
-		kvmppc_radix_tlbie_page(kvm, gpa, shift);
-		if ((old & _PAGE_DIRTY) && memslot->dirty_bitmap) {
-			unsigned long npages = 1;
-			if (shift)
-				npages = 1ul << (shift - PAGE_SHIFT);
-			kvmppc_update_dirty_map(memslot, gfn, npages);
-		}
+		kvmppc_unmap_pte(kvm, ptep, gpa, shift);
 	}
 	return 0;				
 }
