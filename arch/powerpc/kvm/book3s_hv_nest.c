@@ -1166,7 +1166,6 @@ static int kvmppc_emulate_msgsnd(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	struct kvm_vcpu *tvcpu;
 	int rc = EMULATE_DONE;
 	int msgtype, bcast, procid;
-	int cpu;
 	int rb;
 
 	rb = get_rb(instr);
@@ -1196,10 +1195,6 @@ static int kvmppc_emulate_msgsnd(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				continue;
 			}
 
-			cpu = READ_ONCE(tvcpu->arch.thread_cpu);
-			if (cpu >= 0) {
-				kvmppc_set_host_ipi(cpu, 1);
-			}
 			kvmppc_book3s_queue_irqprio(tvcpu,
 					BOOK3S_INTERRUPT_H_DOORBELL);
 			kvmppc_fast_vcpu_kick(tvcpu);
@@ -1209,10 +1204,6 @@ static int kvmppc_emulate_msgsnd(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		tvcpu = kvmppc_find_vcpu(vcpu->kvm, procid);
 
 		if (tvcpu) {
-			cpu = READ_ONCE(tvcpu->arch.thread_cpu);
-			if (cpu >= 0) {
-				kvmppc_set_host_ipi(cpu, 1);
-			}
 			kvmppc_book3s_queue_irqprio(tvcpu,
 					BOOK3S_INTERRUPT_H_DOORBELL);
 			kvmppc_fast_vcpu_kick(tvcpu);
