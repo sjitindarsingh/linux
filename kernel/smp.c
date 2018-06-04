@@ -289,6 +289,7 @@ int smp_call_function_single(int cpu, smp_call_func_t func, void *info,
 	 */
 	WARN_ON_ONCE(cpu_online(this_cpu) && irqs_disabled()
 		     && !oops_in_progress);
+	pr_emerg("%d wait for %d\n", this_cpu, cpu);
 
 	csd = &csd_stack;
 	if (!wait) {
@@ -300,6 +301,7 @@ int smp_call_function_single(int cpu, smp_call_func_t func, void *info,
 
 	if (wait)
 		csd_lock_wait(csd);
+	pr_emerg("%d DONE %d\n", this_cpu, cpu);
 
 	put_cpu();
 
@@ -464,8 +466,11 @@ void smp_call_function_many(const struct cpumask *mask,
 		for_each_cpu(cpu, cfd->cpumask) {
 			call_single_data_t *csd;
 
+			pr_emerg("%d wait for %d\n", this_cpu, cpu);
+
 			csd = per_cpu_ptr(cfd->csd, cpu);
 			csd_lock_wait(csd);
+			pr_emerg("%d DONE %d\n", this_cpu, cpu);
 		}
 	}
 }
