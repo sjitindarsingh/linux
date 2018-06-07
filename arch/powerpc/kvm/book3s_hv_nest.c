@@ -477,6 +477,49 @@ fail_unlock:
 	return EMULATE_FAIL;
 }
 
+static void kvmppc_nested_reg_exit_switch(struct kvm_vcpu *vcpu)
+{
+	reg_switch(&vcpu->arch.hv_regs.dawr.val, &vcpu->arch.dawr);
+	reg_switch(&vcpu->arch.hv_regs.ciabr.val, &vcpu->arch.ciabr);
+	reg_switch(&vcpu->arch.hv_regs.dawrx.val, &vcpu->arch.dawrx);
+	reg_switch(&vcpu->arch.hv_regs.hfscr.val, &vcpu->arch.hfscr);
+	/* Can do this since there's only one thread per vcore on P9 */
+	if (vcpu->arch.hv_regs.lpcr.inited) {
+		u64 mask = kvmppc_get_lpcr_mask();
+		ulong tmp = vcpu->arch.hv_regs.lpcr.val;
+		vcpu->arch.hv_regs.lpcr.val &= ~mask;
+		vcpu->arch.hv_regs.lpcr.val |= vcpu->arch.vcore->lpcr & mask;
+		vcpu->arch.vcore->lpcr = tmp;
+	}
+	reg_switch(&vcpu->arch.hv_regs.pcr.val, &vcpu->arch.vcore->pcr);
+	reg_switch(&vcpu->arch.hv_regs.amor.val, &vcpu->arch.amor);
+
+	vcpu->arch.hv_regs.nested_dpdes = vcpu->arch.vcore->dpdes & 0x1ULL;
+	vcpu->arch.vcore->dpdes = 0;
+
+	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
+}
+
+/*
+ * This is to switch from the nested guest back to the L1 guest, we need to:
+ * - Update the nest state so we use the L1 guest lpid on kvm entry
+ * - Switch back any registers we switched on entry
+ */
+void kvmppc_exit_nested(struct kvm_vcpu *vcpu)
+{
+	struct kvm_arch_nested *nested = vcpu->arch.cur_nest;
+
+	BUG_ON(!nested);
+
+	mutex_lock(&nested->lock);
+	nested->running_vcpus -= 1;
+	mutex_unlock(&nested->lock);
+
+	kvmppc_nested_reg_exit_switch(vcpu);
+
+	vcpu->arch.cur_nest = NULL;
+}
+
 static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				     unsigned int instr)
 {
@@ -582,18 +625,13 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_LPCR:
 		{
-			u64 mask = kvmppc_get_lpcr_mask();
-
 			if (!(val & LPCR_HR)) {
 				/* We only support radix nested guests */
 				pr_err("KVM: nested HV running hpt guest\n");
 				break;
 			}
 
-			/* Only use userspace settable bits of lpcr */
-			vcpu->arch.hv_regs.lpcr.val = vcpu->arch.vcore->lpcr
-						      & ~mask;
-			vcpu->arch.hv_regs.lpcr.val |= (mask & val);
+			vcpu->arch.hv_regs.lpcr.val = val;
 			vcpu->arch.hv_regs.lpcr.inited = 1;
 			rc = EMULATE_DONE;
 			break;
@@ -861,6 +899,34 @@ int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	}
 
 	return rc;
+}
+
+void kvmppc_inject_hv_interrupt(struct kvm_vcpu *vcpu, int vec, u64 flags)
+{
+	if (vcpu->arch.cur_nest)
+		kvmppc_exit_nested(vcpu);
+#ifdef DEBUG
+	pr_info("Injecting hv_int 0x%x (0x%.16llx)\n", vec, flags);
+#endif
+	vcpu->arch.hv_regs.hsrr0 = kvmppc_get_pc(vcpu);
+	vcpu->arch.hv_regs.hsrr1 = kvmppc_get_msr(vcpu) | flags;
+	kvmppc_set_pc(vcpu, vec);
+	vcpu->arch.mmu.reset_msr(vcpu);
+}
+
+void kvmppc_inject_interrupt_hisi(struct kvm_vcpu *vcpu, u64 flags)
+{
+	vcpu->arch.hv_regs.asdr = vcpu->arch.fault_gpa;
+	kvmppc_inject_hv_interrupt(vcpu, BOOK3S_INTERRUPT_H_INST_STORAGE,
+				   flags);
+}
+
+void kvmppc_inject_interrupt_hdsi(struct kvm_vcpu *vcpu, u64 flags)
+{
+	vcpu->arch.hv_regs.hdsisr = flags;
+	vcpu->arch.hv_regs.hdar = vcpu->arch.fault_dar;
+	vcpu->arch.hv_regs.asdr = vcpu->arch.fault_gpa;
+	kvmppc_inject_hv_interrupt(vcpu, BOOK3S_INTERRUPT_H_DATA_STORAGE, 0ULL);
 }
 
 int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
