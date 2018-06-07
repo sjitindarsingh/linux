@@ -132,6 +132,9 @@ static inline bool kvmppc_critical_section(struct kvm_vcpu *vcpu)
 
 void kvmppc_inject_interrupt(struct kvm_vcpu *vcpu, int vec, u64 flags)
 {
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	WARN_ON(vcpu->arch.cur_nest);
+#endif
 	kvmppc_unfixup_split_real(vcpu);
 	kvmppc_set_srr0(vcpu, kvmppc_get_pc(vcpu));
 	kvmppc_set_srr1(vcpu, (kvmppc_get_msr(vcpu) & ~0x783f0000ul) | flags);
@@ -276,7 +279,7 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 	int deliver = 1;
 	int vec = 0;
 	bool crit = kvmppc_critical_section(vcpu);
-	bool hv_int = 0;
+	bool hv_int = 0, hv_exit = 0;
 
 	switch (priority) {
 	case BOOK3S_IRQPRIO_DECREMENTER:
@@ -294,9 +297,11 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 		vec = BOOK3S_INTERRUPT_EXTERNAL;
 		break;
 	case BOOK3S_IRQPRIO_SYSTEM_RESET:
+		hv_exit = 1;
 		vec = BOOK3S_INTERRUPT_SYSTEM_RESET;
 		break;
 	case BOOK3S_IRQPRIO_MACHINE_CHECK:
+		hv_exit = 1;
 		vec = BOOK3S_INTERRUPT_MACHINE_CHECK;
 		break;
 	case BOOK3S_IRQPRIO_DATA_STORAGE:
@@ -320,6 +325,12 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 	case BOOK3S_IRQPRIO_PR_DOORBELL:
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 		if (vcpu->arch.cur_nest) {
+			/*
+			 * Technically not a hv_int, but we need to use the
+			 * hsrr's to avoid nested guest state loss (losing the
+			 * srr's)
+			 */
+			hv_int = 1;
 			/* We can inject the interrupt immediately */
 			vec = BOOK3S_INTERRUPT_DOORBELL;
 		} else
@@ -339,6 +350,7 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 		vec = BOOK3S_INTERRUPT_FP_UNAVAIL;
 		break;
 	case BOOK3S_IRQPRIO_SYSCALL:
+		hv_exit = 1;
 		vec = BOOK3S_INTERRUPT_SYSCALL;
 		break;
 	case BOOK3S_IRQPRIO_DEBUG:
@@ -380,6 +392,13 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 		if (hv_int) {
 			kvmppc_inject_hv_interrupt(vcpu, vec, 0ULL);
 		} else {
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+			if (vcpu->arch.cur_nest) {
+				if (!hv_exit)
+					return 0;
+				kvmppc_exit_nested(vcpu);
+			}
+#endif
 			kvmppc_inject_interrupt(vcpu, vec, 0);
 		}
 	}

@@ -113,6 +113,7 @@ void kvmppc_clear_nest_rmap(struct kvm *kvm,
 void kvmppc_clear_all_nest_rmap(struct kvm *kvm,
 				struct kvm_memory_slot *memslot);
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu);
+void kvmppc_exit_nested(struct kvm_vcpu *vcpu);
 int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			unsigned int instr);
 int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec);
