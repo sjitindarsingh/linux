@@ -1419,7 +1419,13 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 #ifdef CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE
 	/* Doorbell (can get if running nested) exit only if host IPI flag set*/
 	cmpwi   r12, BOOK3S_INTERRUPT_DOORBELL
-	beq	66f
+	bne	70f
+	mfspr	r10, SPRN_HSRR0
+	mfspr	r11, SPRN_HSRR1
+	std	r10, VCPU_PC(r9)
+	std	r11, VCPU_MSR(r9)
+	b	66f
+70:
 #endif /* CONFIG_KVM_BOOK3S_NESTED_HV_POSSIBLE */
 	/* Hypervisor doorbell - exit only if host IPI flag set */
 	cmpwi	r12, BOOK3S_INTERRUPT_H_DOORBELL
