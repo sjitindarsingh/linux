@@ -1195,15 +1195,19 @@ static int kvmppc_emulate_msgsnd(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				continue;
 			}
 
-			kvmppc_book3s_queue_irqprio(tvcpu,
-					BOOK3S_INTERRUPT_H_DOORBELL);
-			kvmppc_fast_vcpu_kick(tvcpu);
+			if (!test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
+				      &tvcpu->arch.pending_exceptions)) {
+				kvmppc_book3s_queue_irqprio(tvcpu,
+						BOOK3S_INTERRUPT_H_DOORBELL);
+				kvmppc_fast_vcpu_kick(tvcpu);
+			}
 		}
 	} else {
 		/* Send to single thread (since one thread per sub-core) */
 		tvcpu = kvmppc_find_vcpu(vcpu->kvm, procid);
 
-		if (tvcpu) {
+		if (tvcpu && !test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
+				       &tvcpu->arch.pending_exceptions)) {
 			kvmppc_book3s_queue_irqprio(tvcpu,
 					BOOK3S_INTERRUPT_H_DOORBELL);
 			kvmppc_fast_vcpu_kick(tvcpu);

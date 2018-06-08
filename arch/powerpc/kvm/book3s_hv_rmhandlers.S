@@ -1107,9 +1107,10 @@ no_xive:
 deliver_guest_interrupt:	/* r4 = vcpu, r13 = paca */
 	mr	r3, r4
 	bl	kvmppc_guest_entry_inject_int
-	cmpdi	r3, 0
+	cmpdi	cr1, r3, 0
+	andi.	r5, r3, 1	/* 1 in the low bit means HV int */
 	ld      r4, HSTATE_KVM_VCPU(r13)
-	blt	70f
+	blt	cr1, 70f
 	ld	r10, VCPU_PC(r4)
 	ld	r11, VCPU_MSR(r4)
 	/* r11 = vcpu->arch.msr & ~MSR_HV */
@@ -1120,11 +1121,22 @@ deliver_guest_interrupt:	/* r4 = vcpu, r13 = paca */
 	ld	r7, VCPU_XER(r4)
 	mtctr	r6
 	mtxer	r7
-	bne	12f
-	ld	r6, VCPU_SRR0(r4)
+	bne	71f
+	bne	cr1, 12f
+71:	ld	r6, VCPU_SRR0(r4)
 	ld	r7, VCPU_SRR1(r4)
 	mtspr	SPRN_SRR0, r6
 	mtspr	SPRN_SRR1, r7
+#ifdef	CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	beq	fast_guest_return
+	/* Simulate HV int injection */
+	std	r10, VCPU_HSRR0(r4)
+	clrrdi	r3,  r3, 1		/* Clear low bit */
+	mr	r10, r3
+	std	r11, VCPU_HSRR1(r4)
+	mr	r9,  r4
+	bl	kvmppc_msr_interrupt
+#endif
 	b	fast_guest_return
 
 70:	li	r12, 0
