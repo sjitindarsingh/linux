@@ -38,8 +38,9 @@ enum ppc_dbell {
 
 static inline void _ppc_msgsnd(u32 msg)
 {
-	__asm__ __volatile__ (ASM_FTR_IFSET(PPC_MSGSND(%1), PPC_MSGSNDP(%1), %0)
-				: : "i" (CPU_FTR_HVMODE), "r" (msg));
+	__asm__ __volatile__ (ASM_FTR_IFCLR(PPC_MSGSNDP(%1), PPC_MSGSND(%1), %0)
+				: : "i" (CPU_FTR_HVMODE | CPU_FTR_NESTED_HV),
+				    "r" (msg));
 }
 
 /* sync before sending message */
