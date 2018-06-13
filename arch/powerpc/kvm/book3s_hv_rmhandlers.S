@@ -1133,6 +1133,8 @@ deliver_guest_interrupt:	/* r4 = vcpu, r13 = paca */
 	std	r10, VCPU_HSRR0(r4)
 	clrrdi	r3,  r3, 1		/* Clear low bit */
 	mr	r10, r3
+	ld	r8,  VCPU_SH_MSR_HV(r4)
+	or	r11, r11, r8
 	std	r11, VCPU_HSRR1(r4)
 	mr	r9,  r4
 	bl	kvmppc_msr_interrupt

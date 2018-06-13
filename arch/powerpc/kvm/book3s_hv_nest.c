@@ -249,6 +249,7 @@ void kvmppc_clear_all_nest_rmap(struct kvm *kvm,
 
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
 {
+	vcpu->arch.sh_msr_hv = MSR_HV; /* cpus start with MSR[HV] set */
 	vcpu->arch.hdec_expires = (1ULL << 63) - 1; /* A big number... */
 }
 
@@ -735,6 +736,8 @@ static void kvmppc_nested_reg_entry_switch(struct kvm_vcpu *vcpu)
 	hv_reg_switch(&vcpu->arch.hv_regs.pcr, &vcpu->arch.vcore->pcr);
 	hv_reg_switch(&vcpu->arch.hv_regs.amor, &vcpu->arch.amor);
 
+	vcpu->arch.sh_msr_hv = 0;
+
 	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
 }
 
@@ -757,6 +760,13 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 		 * only take effect in non-HV state.
 		 */
 		goto no_switch;
+	}
+
+	if (!vcpu->arch.shadow_lpid) {
+		pr_info("HRFID but !LPID\n");
+		pr_info("[%d] msr: 0x%.16llx pc: 0x%.16lx\n", vcpu->vcpu_id, vcpu->arch.shregs.msr, vcpu->arch.pc);
+		pr_info("-->> msr: 0x%.16lx pc: 0x%.16lx\n", vcpu->arch.hv_regs.hsrr1, vcpu->arch.hv_regs.hsrr0);
+		goto no_nest;
 	}
 
 	nested = kvmppc_find_init_vm_nested(vcpu, vcpu->arch.shadow_lpid);
@@ -795,9 +805,10 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 	nested->running_vcpus += 1;
 	mutex_unlock(&nested->lock);
 
-	kvmppc_nested_reg_entry_switch(vcpu);
-
 	vcpu->arch.cur_nest = nested;
+
+no_nest:
+	kvmppc_nested_reg_entry_switch(vcpu);
 
 no_switch:
 	vcpu->arch.pc = vcpu->arch.hv_regs.hsrr0;
@@ -821,6 +832,8 @@ static void kvmppc_nested_reg_exit_switch(struct kvm_vcpu *vcpu)
 	hv_reg_switch(&vcpu->arch.hv_regs.pcr, &vcpu->arch.vcore->pcr);
 	hv_reg_switch(&vcpu->arch.hv_regs.amor, &vcpu->arch.amor);
 
+	vcpu->arch.sh_msr_hv = MSR_HV;
+
 	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
 }
 
@@ -833,15 +846,18 @@ void kvmppc_exit_nested(struct kvm_vcpu *vcpu)
 {
 	struct kvm_arch_nested *nested = vcpu->arch.cur_nest;
 
-	BUG_ON(!nested);
+	if (!nested) {
+		goto no_nest;
+	}
 
 	mutex_lock(&nested->lock);
 	nested->running_vcpus -= 1;
 	mutex_unlock(&nested->lock);
 
-	kvmppc_nested_reg_exit_switch(vcpu);
-
 	vcpu->arch.cur_nest = NULL;
+
+no_nest:
+	kvmppc_nested_reg_exit_switch(vcpu);
 }
 
 static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
@@ -1290,6 +1306,11 @@ int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 {
 	int rc = EMULATE_FAIL;
 
+	if (!vcpu->arch.sh_msr_hv) {
+		pr_err("KVM: Guest excecuted HV instr in non-HV mode 0x%.8x\n",
+			instr);
+	}
+
 	switch (get_op(instr)) {
 	case 31:
 		switch (get_xop(instr)) {
@@ -1322,13 +1343,13 @@ int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec)
 	ulong lpcr;
 	int ret;
 
-	if (vcpu->arch.cur_nest) {
+	if (!vcpu->arch.sh_msr_hv) {
 		ret = 1;
 		/* Our lpcr is in the hv_regs struct since nested */
-		lpcr = vcpu->arch.hv_regs.lpcr.val;
+		lpcr = vcpu->arch.vcore->lpcr;
 	} else {
 		ret = !!(vcpu->arch.shregs.msr & MSR_EE);
-		lpcr = vcpu->arch.vcore->lpcr;
+		lpcr = vcpu->arch.hv_regs.lpcr.val;
 	}
 
 	switch (vec) {
@@ -1346,8 +1367,10 @@ int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec)
 
 void kvmppc_inject_hv_interrupt(struct kvm_vcpu *vcpu, int vec, u64 flags)
 {
-	if (vcpu->arch.cur_nest)
+	flags |= vcpu->arch.sh_msr_hv;
+	if (!vcpu->arch.sh_msr_hv) {
 		kvmppc_exit_nested(vcpu);
+	}
 #ifdef DEBUG
 	pr_info("Injecting hv_int 0x%x (0x%.16llx)\n", vec, flags);
 #endif

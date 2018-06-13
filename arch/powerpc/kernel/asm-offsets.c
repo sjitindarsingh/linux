@@ -508,6 +508,7 @@ int main(void)
 	OFFSET(VCPU_THREAD_CPU, kvm_vcpu, arch.thread_cpu);
 #endif
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	OFFSET(VCPU_SH_MSR_HV, kvm_vcpu, arch.sh_msr_hv);
 	OFFSET(VCPU_CUR_NEST, kvm_vcpu, arch.cur_nest);
 	OFFSET(VCPU_HDEC_EXPIRES, kvm_vcpu, arch.hdec_expires);
 	OFFSET(VCPU_HSRR0, kvm_vcpu, arch.hv_regs.hsrr0);

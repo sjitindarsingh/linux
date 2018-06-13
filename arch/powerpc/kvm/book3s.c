@@ -392,14 +392,16 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 		if (hv_int) {
 			kvmppc_inject_hv_interrupt(vcpu, vec, 0ULL);
 		} else {
+			u64 flags = 0UL;
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
-			if (vcpu->arch.cur_nest) {
+			flags |= vcpu->arch.sh_msr_hv;
+			if (!vcpu->arch.sh_msr_hv) {
 				if (!hv_exit)
 					return 0;
 				kvmppc_exit_nested(vcpu);
 			}
 #endif
-			kvmppc_inject_interrupt(vcpu, vec, 0);
+			kvmppc_inject_interrupt(vcpu, vec, flags);
 		}
 	}
 

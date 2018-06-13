@@ -742,7 +742,7 @@ void kvmhv_p9_restore_lpcr(struct kvm_split_mode *sip)
 int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 {
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
-	if (vcpu->arch.cur_nest) {
+	if (!vcpu->arch.sh_msr_hv) {
 		if (test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
 			     &vcpu->arch.pending_exceptions)) {
 			return -1;
