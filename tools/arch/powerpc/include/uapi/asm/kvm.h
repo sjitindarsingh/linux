@@ -634,6 +634,8 @@ struct kvm_ppc_cpu_char {
 
 #define KVM_REG_PPC_DEC_EXPIRY	(KVM_REG_PPC | KVM_REG_SIZE_U64 | 0xbe)
 #define KVM_REG_PPC_ONLINE	(KVM_REG_PPC | KVM_REG_SIZE_U32 | 0xbf)
+#define KVM_REG_PPC_PEND_EXCEP	(KVM_REG_PPC | KVM_REG_SIZE_U64 | 0xc0)
+#define KVM_REG_PPC_CUR_NEST	(KVM_REG_PPC | KVM_REG_SIZE_U64 | 0xc1)
 
 /* Transactional Memory checkpointed state:
  * This is all GPRs, all VSX regs and a subset of SPRs
