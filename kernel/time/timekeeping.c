@@ -2032,7 +2032,7 @@ void update_wall_time(void)
 	u64 offset;
 	int shift = 0, maxshift;
 	unsigned int clock_set = 0;
-	unsigned long flags, loop = 0;
+	unsigned long flags;
 
 	raw_spin_lock_irqsave(&timekeeper_lock, flags);
 
@@ -2068,10 +2068,6 @@ void update_wall_time(void)
 	maxshift = (64 - (ilog2(ntp_tick_length())+1)) - 1;
 	shift = min(shift, maxshift);
 	while (offset >= tk->cycle_interval) {
-		if (offset & (1ULL << 63)) {
-			pr_info("now: 0x%.16llx, last: 0x%.16llx\n", tk_clock_read(&tk->tkr_mono), tk->tkr_mono.cycle_last);
-			pr_info("[%d] %ld: offset: 0x%.16llx shift: %d\n", get_cpu(), loop++, offset, shift);
-		}
 		offset = logarithmic_accumulation(tk, offset, shift,
 							&clock_set);
 		if (offset < tk->cycle_interval<<shift)
