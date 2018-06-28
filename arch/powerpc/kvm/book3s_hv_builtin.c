@@ -755,7 +755,6 @@ int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 #endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 	{
 		unsigned long lpcr = mfspr(SPRN_LPCR);
-		bool write_lpcr = false;
 		if (test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
 			     &vcpu->arch.pending_exceptions)) {
 			mtspr(SPRN_DPDES, 1);
@@ -765,15 +764,28 @@ int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 				  &vcpu->arch.pending_exceptions);
 		}
 		if (vcpu->arch.shregs.msr & MSR_EE) {
+			int ret = 0;
 			if (test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
 				     &vcpu->arch.pending_exceptions)) {
+				lpcr &= ~LPCR_MER;
+				lpcr |= LPCR_LPES0;
+				mtspr(SPRN_LPCR, lpcr);
 				clear_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
 					  &vcpu->arch.pending_exceptions);
 				/* Set low bit to represent HV int */
-				return BOOK3S_INTERRUPT_H_DOORBELL | 0x1;
-			} else if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
-					    &vcpu->arch.pending_exceptions)) {
-				return BOOK3S_INTERRUPT_EXTERNAL;
+				ret = BOOK3S_INTERRUPT_H_DOORBELL | 0x1;
+			}
+			if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+				     &vcpu->arch.pending_exceptions)) {
+				if (ret) {
+					lpcr |= LPCR_MER;
+					mtspr(SPRN_LPCR, lpcr);
+				} else {
+					ret = BOOK3S_INTERRUPT_EXTERNAL;
+				}
+			}
+			if (ret) {
+				return ret;
 			} else {
 				unsigned long dec = mfspr(SPRN_DEC);
 				unsigned long mask = 1ULL << 31;
@@ -791,16 +803,13 @@ int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 				/* Set LPCR[MER], clear LPCR[LPES0], set host IPI */
 				lpcr |= LPCR_MER;
 				lpcr &= ~LPCR_LPES0;
-				write_lpcr = true;
-				local_paca->kvm_hstate.host_ipi = 1;
+				mtspr(SPRN_LPCR, lpcr);
 			} else if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
 					    &vcpu->arch.pending_exceptions)) {
 				lpcr |= LPCR_MER;
-				write_lpcr = true;
+				mtspr(SPRN_LPCR, lpcr);
 			}
 		}
-		if (write_lpcr)
-			mtspr(SPRN_LPCR, lpcr);
 	}
 
 	return 0;
