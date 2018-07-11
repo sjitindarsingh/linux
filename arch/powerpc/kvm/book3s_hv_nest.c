@@ -286,6 +286,7 @@ static struct kvm_arch_nested *kvmppc_init_vm_nested(struct kvm *kvm,
 	}
 
 	mutex_init(&nested->lock);
+	spin_lock_init(&nested->mmu_lock);
 	nested->lpid = 0;		/* Will be allocated on final entry */
 	nested->host_lpid = kvm->arch.lpid;
 	nested->shadow_lpid = lpid;
@@ -612,12 +613,14 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 			 */
 			if (lpid) {
 				struct kvm_arch_nested *nested;
-				nested = kvmppc_find_nested(vcpu->kvm, lpid);
+				struct kvm *kvm = vcpu->kvm;
+				nested = kvmppc_find_nested(kvm, lpid);
 
 				if (!nested) {
 					goto no_nested;
 				}
 
+				spin_lock(&nested->mmu_lock);
 				mutex_lock(&nested->lock);
 				/* Nothing to do if haven't alloced pgtable */
 				if (!nested->shadow_pgtable) {
@@ -625,21 +628,23 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 				}
 
 				/* Free page table since global invalidate */
-				kvmppc_free_pgtable_radix(vcpu->kvm,
+				kvmppc_free_pgtable_radix(kvm,
 							  &nested->shadow_pgtable);
-				kvmppc_clear_nest_rmap_lpid(vcpu->kvm,
+				kvmppc_setup_partition_table_nested(nested);
+				kvmppc_clear_nest_rmap_lpid(kvm,
 							    nested->shadow_lpid);
 
-				if (!nested->lpid) {
+				/* Can't free the lpid if running with it */
+				if (nested->running_vcpus || !nested->lpid) {
 					goto unlock;
 				}
 
 				/* Return the lpid to the pool */
-				kvmppc_setup_partition_table_nested(nested);
 				kvmppc_free_lpid(nested->lpid);
 				nested->lpid = 0;
 unlock:
 				mutex_unlock(&nested->lock);
+				spin_unlock(&nested->mmu_lock);
 			}
 no_nested:
 		case 1:
@@ -1664,12 +1669,20 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 				__func__, base_gfn);
 	}
 
-	/*
-	 * The only way this can happen is if another thread freed the page
-	 * table while we were running the nested guest, which shouldn't be
-	 * possible.
-	 */
-	WARN_ON(!nested->shadow_pgtable);
+	spin_lock(&nested->mmu_lock);
+	mutex_lock(&nested->lock);
+	/* It may have been freed while we were running */
+	if (!nested->shadow_pgtable) {
+		rc = kvmppc_init_pgtable_radix(kvm,
+					       &nested->shadow_pgtable);
+		if (rc) {
+			/* Let the guest try again */
+			rc = RESUME_GUEST;
+			mutex_unlock(&nested->lock);
+			goto out_unlock;
+		}
+	}
+	mutex_unlock(&nested->lock);
 
 	rmap_entry.lpid = nested->shadow_lpid;
 	rmap_entry.pfn = pte_pfn(pte);
@@ -1685,6 +1698,8 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 		rc = RESUME_GUEST;
 	}
 
+out_unlock:
+	spin_unlock(&nested->mmu_lock);
 	return rc;
 }
 
@@ -1797,6 +1812,7 @@ void kvmppc_destroy_vm_hv_nest(struct kvm *kvm)
 
 	/* For each nested guest free the shadow_pgtable and reclaim the lpid */
 	list_for_each_entry_safe(cur, n, &kvm->arch.nested, list) {
+		spin_lock(&cur->mmu_lock);
 		mutex_lock(&cur->lock);
 
 		if (!cur->shadow_pgtable) {

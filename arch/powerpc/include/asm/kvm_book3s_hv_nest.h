@@ -48,6 +48,7 @@ struct kvm_arch_nested_hv_regs {
 struct kvm_arch_nested {
 	struct list_head list;
 	struct mutex lock;		/* Lock against modifying the state */
+	spinlock_t mmu_lock;		/* Lock against modifying the pgtable */
 	unsigned int running_vcpus;	/* number of vcpus running this guest */
 	unsigned int lpid;              /* real lpid of this nested guest */
 	unsigned int host_lpid;         /* lpid of top level L1 guest */
