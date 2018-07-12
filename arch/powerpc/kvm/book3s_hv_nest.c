@@ -292,6 +292,8 @@ static struct kvm_arch_nested *kvmppc_init_vm_nested(struct kvm *kvm,
 	nested->shadow_lpid = lpid;
 	nested->shadow_pgtable = NULL;
 	nested->process_table = 0ULL;
+	nested->min_tb_seen = 1UL << 63;
+	nested->tb_offset = 1UL << 63;
 
 	list_add(&nested->list, &kvm->arch.nested);
 
@@ -633,8 +635,12 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 							    nested->shadow_lpid);
 
 				/* Can't free the lpid if running with it */
-				if (nested->running_vcpus || !nested->lpid) {
+				if (nested->running_vcpus) {
 					goto unlock;
+				}
+
+				if (!nested->lpid) {
+					goto no_lpid;
 				}
 
 				/* Return the lpid to the pool */
@@ -643,6 +649,10 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 #endif
 				kvmppc_free_lpid(nested->lpid);
 				nested->lpid = 0;
+no_lpid:
+				nested->min_tb_seen = 1UL << 63;
+				nested->tb_offset = 1UL << 63;
+
 unlock:
 				mutex_unlock(&nested->lock);
 				spin_unlock(&nested->mmu_lock);
@@ -677,6 +687,8 @@ static struct kvm_arch_nested *kvmppc_find_init_vm_nested(struct kvm_vcpu *vcpu,
 							  unsigned int lpid)
 {
 	struct kvm_arch_nested *nested;
+
+	WARN_ON(!lpid);
 
 	mutex_lock(&vcpu->kvm->lock);
 
@@ -775,10 +787,11 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 		goto no_nest;
 	}
 
-	nested = kvmppc_find_init_vm_nested(vcpu, vcpu->arch.shadow_lpid);
+	nested = kvmppc_find_nested(vcpu->kvm, vcpu->arch.shadow_lpid);
 	if (!nested) {
-		/* ENOMEM -> not much we can do, let the guest try again... */
-		return EMULATE_DONE;
+		/* Shouldn't be possible... It was alloced when setting lpid */
+		WARN_ON(1);
+		return EMULATE_FAIL;
 	}
 
 	mutex_lock(&nested->lock);
@@ -926,10 +939,34 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		break;
 	case SPRN_TBU40:
 		/*
-		 * Update the tb offset in the vcore accordingly
-		 * Can do this since on P9 there is only 1 thread per vcore
+		 * We want to avoid the case where the timebase ever goes
+		 * backwards for a guest. So we keep track of the offset on a
+		 * per nested guest basis and only ever let the offset
+		 * increase. In the event it decreases we use the last known
+		 * offset. If the offset is zero (uninitialised) then we can of
+		 * course let it go negative the first time it's set.
 		 */
-		vcpu->arch.vcore->tb_offset = ALIGN(val - mftb(), 1UL << 24);
+		{
+			struct kvm_arch_nested *nested;
+			signed long offset = ALIGN(val - mftb(), 1UL << 24);
+
+			nested = kvmppc_find_nested(vcpu->kvm,
+						    vcpu->arch.shadow_lpid);
+			if (!nested) {
+				/* L1 is trying to restore it's own timebase */
+				vcpu->arch.vcore->eff_tb_offset = &vcpu->arch.vcore->tb_offset;
+				return EMULATE_DONE;
+			}
+			mutex_lock(&nested->lock);
+			if (offset > nested->tb_offset) {
+				nested->tb_offset = offset;
+				pr_info("%d: lpid %d offset set to %ld\n", vcpu->vcpu_id, nested->lpid, offset);
+			}
+
+			/* L1 is expecting to run with the nested offset now */
+			vcpu->arch.vcore->eff_tb_offset = (u64 *) &nested->tb_offset;
+			mutex_unlock(&nested->lock);
+		}
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_HSPRG0:
@@ -996,6 +1033,9 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			break;
 		}
 	case SPRN_LPID:
+		if (val && !kvmppc_find_init_vm_nested(vcpu, val)) {
+			return EMULATE_FAIL;
+		}
 		vcpu->arch.shadow_lpid = val;
 		rc = EMULATE_DONE;
 		break;

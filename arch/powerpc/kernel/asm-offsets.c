@@ -570,7 +570,7 @@ int main(void)
 	OFFSET(VCORE_IN_GUEST, kvmppc_vcore, in_guest);
 	OFFSET(VCORE_NAPPING_THREADS, kvmppc_vcore, napping_threads);
 	OFFSET(VCORE_KVM, kvmppc_vcore, kvm);
-	OFFSET(VCORE_TB_OFFSET, kvmppc_vcore, tb_offset);
+	OFFSET(VCORE_TB_OFFSET_EFF, kvmppc_vcore, eff_tb_offset);
 	OFFSET(VCORE_TB_OFFSET_APPL, kvmppc_vcore, tb_offset_applied);
 	OFFSET(VCORE_LPCR, kvmppc_vcore, lpcr);
 	OFFSET(VCORE_PCR, kvmppc_vcore, pcr);

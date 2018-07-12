@@ -1914,6 +1914,7 @@ static struct kvmppc_vcore *kvmppc_vcore_create(struct kvm *kvm, int core)
 	vcore->first_vcpuid = core * kvm->arch.smt_mode;
 	vcore->kvm = kvm;
 	INIT_LIST_HEAD(&vcore->preempt_list);
+	vcore->eff_tb_offset = &vcore->tb_offset;
 
 	return vcore;
 }

@@ -55,6 +55,8 @@ struct kvm_arch_nested {
 	unsigned int shadow_lpid;       /* lpid L1 guest thinks this guest is */
 	pgd_t *shadow_pgtable;          /* our page table for this guest */
 	u64 process_table;              /* process table entry for this guest */
+	signed long min_tb_seen;	/* lowest seen timebase value */
+	signed long tb_offset;		/* nested guest timebase offset */
 };
 
 /*

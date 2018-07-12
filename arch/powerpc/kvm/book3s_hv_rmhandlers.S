@@ -689,7 +689,8 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	bne	23b
 
 	/* Add timebase offset onto timebase */
-22:	ld	r8,VCORE_TB_OFFSET(r5)
+22:	ld	r7,VCORE_TB_OFFSET_EFF(r5)
+	ld	r8,0(r7)
 	cmpdi	r8,0
 	beq	37f
 	std	r8, VCORE_TB_OFFSET_APPL(r5)
