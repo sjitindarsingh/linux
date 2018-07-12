@@ -303,12 +303,14 @@ static void kvmppc_setup_partition_table_nested(struct kvm_arch_nested *nested)
 {
 	unsigned long dw0, dw1;
 
+	if (!nested->lpid) {
+		/* No lpid alloced for this nest guest yet -> nothing to do */
+		return;
+	}
+
 	dw0 = PATB_HR | radix__get_tree_size() | __pa(nested->shadow_pgtable) |
 	      RADIX_PGD_INDEX_SIZE;
 	dw1 = PATB_GR | nested->process_table;
-
-	WARN(!nested->lpid,
-	     "KVM: Setting LPID 0 partition table entry in nest code\n");
 
 	mmu_partition_table_set_entry(nested->lpid, dw0, dw1);
 }
@@ -352,14 +354,7 @@ static int kvmppc_find_update_process_table(struct kvm *kvm,
 
 	if (lpid) {
 		nested->process_table = patb1;
-		if (nested->lpid) {
-			/*
-			 * Have we allocated an lpid for this nested guest yet?
-			 * If not then the partition table setup will be done
-			 * when allocating the lpid.
-			 */
-			kvmppc_setup_partition_table_nested(nested);
-		}
+		kvmppc_setup_partition_table_nested(nested);
 	} else {
 		if (patb1) {
 			struct prtb_entry prtbe;
@@ -596,7 +591,9 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 
 				if (nested) {
 					mutex_lock(&nested->lock);
+					WARN_ON(nested->running_vcpus);
 					nested->process_table = 0ULL;
+					kvmppc_setup_partition_table_nested(nested);
 					mutex_unlock(&nested->lock);
 				}
 			} else {
@@ -628,6 +625,7 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 				}
 
 				/* Free page table since global invalidate */
+				WARN_ON(nested->running_vcpus);
 				kvmppc_free_pgtable_radix(kvm,
 							  &nested->shadow_pgtable);
 				kvmppc_setup_partition_table_nested(nested);
@@ -797,6 +795,7 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 		if (rc) {
 			goto fail_unlock;
 		}
+		kvmppc_setup_partition_table_nested(nested);
 	}
 
 	/* Find or allocate an lpid (if required) */
@@ -1671,16 +1670,11 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 
 	spin_lock(&nested->mmu_lock);
 	mutex_lock(&nested->lock);
-	/* It may have been freed while we were running */
 	if (!nested->shadow_pgtable) {
-		rc = kvmppc_init_pgtable_radix(kvm,
-					       &nested->shadow_pgtable);
-		if (rc) {
-			/* Let the guest try again */
-			rc = RESUME_GUEST;
-			mutex_unlock(&nested->lock);
-			goto out_unlock;
-		}
+		/* Let the guest try again */
+		rc = RESUME_GUEST;
+		mutex_unlock(&nested->lock);
+		goto out_unlock;
 	}
 	mutex_unlock(&nested->lock);
 
@@ -1815,22 +1809,19 @@ void kvmppc_destroy_vm_hv_nest(struct kvm *kvm)
 		spin_lock(&cur->mmu_lock);
 		mutex_lock(&cur->lock);
 
-		if (!cur->shadow_pgtable) {
-			goto free_nested;
+		/* Zero pgtable and process_table, set partition table entry */
+		if (cur->shadow_pgtable) {
+			kvmppc_free_pgtable_radix(kvm, &cur->shadow_pgtable);
 		}
-
-		kvmppc_free_pgtable_radix(kvm, &cur->shadow_pgtable);
-		if (!cur->lpid) {
-			goto free_nested;
-		}
-
-		/* Return the lpid to the pool */
 		cur->process_table = 0ULL;
 		kvmppc_setup_partition_table_nested(cur);
-		kvmppc_free_lpid(cur->lpid);
-		cur->lpid = 0;
 
-free_nested:
+		if (cur->lpid) {
+			/* Return the lpid to the pool */
+			kvmppc_free_lpid(cur->lpid);
+			cur->lpid = 0;
+		}
+
 		list_del(&cur->list);
 		kfree(cur);
 	}
