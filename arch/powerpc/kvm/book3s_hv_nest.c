@@ -638,6 +638,9 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 				}
 
 				/* Return the lpid to the pool */
+#ifdef DEBUG
+				pr_info("KVM: Freed nested lpid %d\n", nested->lpid);
+#endif
 				kvmppc_free_lpid(nested->lpid);
 				nested->lpid = 0;
 unlock:
@@ -1818,6 +1821,9 @@ void kvmppc_destroy_vm_hv_nest(struct kvm *kvm)
 
 		if (cur->lpid) {
 			/* Return the lpid to the pool */
+#ifdef DEBUG
+			pr_info("KVM: Freed nested lpid %d\n", cur->lpid);
+#endif
 			kvmppc_free_lpid(cur->lpid);
 			cur->lpid = 0;
 		}
