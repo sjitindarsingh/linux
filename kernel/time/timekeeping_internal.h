@@ -13,7 +13,6 @@ extern void tk_debug_account_sleep_time(struct timespec64 *t);
 #define tk_debug_account_sleep_time(x)
 #endif
 
-#ifdef CONFIG_CLOCKSOURCE_VALIDATE_LAST_CYCLE
 static inline u64 clocksource_delta(u64 now, u64 last, u64 mask)
 {
 	u64 ret = (now - last) & mask;
@@ -22,13 +21,10 @@ static inline u64 clocksource_delta(u64 now, u64 last, u64 mask)
 	 * Prevent time going backwards by checking the MSB of mask in
 	 * the result. If set, return 0.
 	 */
-	return ret & ~(mask >> 1) ? 0 : ret;
+	if (ret & ~(mask >> 1)) {
+		pr_emerg("%d ret & ~(mask >> 1)!!!\n%ld\n\n", smp_processor_id(), (signed long) ret);
+	}
+	return ret;
 }
-#else
-static inline u64 clocksource_delta(u64 now, u64 last, u64 mask)
-{
-	return (now - last) & mask;
-}
-#endif
 
 #endif /* _TIMEKEEPING_INTERNAL_H */
