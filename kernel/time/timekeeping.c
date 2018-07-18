@@ -737,10 +737,14 @@ ktime_t ktime_get(void)
 	unsigned int seq;
 	ktime_t base;
 	u64 nsecs;
+	u64 count = 0;
 
 	WARN_ON(timekeeping_suspended);
 
 	do {
+		if (count++ > 2) {
+			pr_err("%d ktime_get %d\n", smp_processor_id(), (int) count);
+		}
 		seq = read_seqcount_begin(&tk_core.seq);
 		base = tk->tkr_mono.base;
 		nsecs = timekeeping_get_ns(&tk->tkr_mono);
