@@ -1636,6 +1636,9 @@ static int kvmppc_get_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 	case KVM_REG_PPC_CUR_NEST:
 		*val = get_reg_val(id, (unsigned long) vcpu->arch.cur_nest);
 		break;
+	case KVM_REG_PPC_TB:
+		*val = get_reg_val(id, ((signed long) mftb()) + ((signed long) *vcpu->arch.vcore->eff_tb_offset));
+		break;
 	default:
 		r = -EINVAL;
 		break;
