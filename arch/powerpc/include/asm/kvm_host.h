@@ -307,6 +307,7 @@ struct kvm_arch {
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 	u64 ptcr;			/* Partition Table Control Register */
 	struct list_head nested;	/* Per Nested Guest Information */
+	unsigned long ran_nested[64];
 #endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
 	/* This array can grow quite large, keep it at the end */

@@ -826,6 +826,11 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 	mutex_unlock(&nested->lock);
 
 	vcpu->arch.cur_nest = nested;
+	if (!vcpu->kvm->arch.ran_nested[vcpu->vcpu_id]) {
+		vcpu->kvm->arch.ran_nested[vcpu->vcpu_id] = 1UL;
+		pr_info("%d vcpu ran nested (%d)\n", vcpu->vcpu_id,
+		((vcpu->vcpu_id / 8) * 4) + (vcpu->vcpu_id % 8));
+	}
 
 no_nest:
 	kvmppc_nested_reg_entry_switch(vcpu);
