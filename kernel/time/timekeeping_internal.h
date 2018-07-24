@@ -22,7 +22,8 @@ static inline u64 clocksource_delta(u64 now, u64 last, u64 mask)
 	 * the result. If set, return 0.
 	 */
 	if (ret & ~(mask >> 1)) {
-		pr_emerg("%d ret & ~(mask >> 1)!!!\n%ld\n\n", smp_processor_id(), (signed long) ret);
+		pr_emerg("now: 0x%.16llx last: 0x%.16llx mask 0x%.16llx\n", now, last, mask);
+		//pr_emerg("%d ret & ~(mask >> 1)!!!\n%ld\n\n", smp_processor_id(), (signed long) ret);
 	}
 	return ret;
 }
