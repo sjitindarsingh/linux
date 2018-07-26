@@ -373,10 +373,9 @@ int kvmppc_core_prepare_to_enter(struct kvm_vcpu *vcpu)
 #endif
 	priority = __ffs(*pending);
 	while (priority < BOOK3S_IRQPRIO_MAX) {
-		if (kvmppc_book3s_irqprio_deliver(vcpu, priority)) {
-			if (clear_irqprio(vcpu, priority))
-				clear_bit(priority,
-					  &vcpu->arch.pending_exceptions);
+		if (kvmppc_book3s_irqprio_deliver(vcpu, priority) &&
+		    clear_irqprio(vcpu, priority)) {
+			clear_bit(priority, &vcpu->arch.pending_exceptions);
 			break;
 		}
 
