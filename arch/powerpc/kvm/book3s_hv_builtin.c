@@ -798,13 +798,7 @@ int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 
 			}
 		} else {
-			if (test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
-				     &vcpu->arch.pending_exceptions)) {
-				/* Set LPCR[MER], clear LPCR[LPES0], set host IPI */
-				lpcr |= LPCR_MER;
-				lpcr &= ~LPCR_LPES0;
-				mtspr(SPRN_LPCR, lpcr);
-			} else if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+			if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
 					    &vcpu->arch.pending_exceptions)) {
 				lpcr |= LPCR_MER;
 				mtspr(SPRN_LPCR, lpcr);
