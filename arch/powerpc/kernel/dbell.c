@@ -67,7 +67,10 @@ int doorbell_try_core_ipi(int cpu)
 	int ret = 0;
 
 	if (cpumask_test_cpu(cpu, cpu_sibling_mask(this_cpu))) {
-		doorbell_core_ipi(cpu);
+		if (cpu_has_feature(CPU_FTR_NESTED_HV))
+			doorbell_global_ipi(cpu);
+		else
+			doorbell_core_ipi(cpu);
 		ret = 1;
 	}
 
