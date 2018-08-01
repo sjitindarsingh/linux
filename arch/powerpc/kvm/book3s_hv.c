@@ -117,6 +117,16 @@ module_param_cb(h_ipi_redirect, &module_param_ops, &h_ipi_redirect, 0644);
 MODULE_PARM_DESC(h_ipi_redirect, "Redirect H_IPI wakeup to a free host core");
 #endif
 
+static bool debug_kvm = false;
+
+static struct kernel_param_ops debug_kvm_ops = {
+       .set = param_set_bool,
+       .get = param_get_bool,
+};
+
+module_param_cb(debug_kvm, &debug_kvm_ops, &debug_kvm, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(debug_kvm, "KVM Debugging");
+
 /* If set, the threads on each CPU core have to be in the same MMU mode */
 static bool no_mixing_hpt_and_radix;
 
@@ -1172,6 +1182,10 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* hypercall with MSR_PR has already been handled in rmode,
 		 * and never reaches here.
 		 */
+
+		if (debug_kvm) {
+			pr_info("%d: hcall 0x%lx\n", vcpu->vcpu_id, kvmppc_get_gpr(vcpu, 3));
+		}
 
 		run->papr_hcall.nr = kvmppc_get_gpr(vcpu, 3);
 		for (i = 0; i < 9; ++i)
