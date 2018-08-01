@@ -1558,6 +1558,7 @@ static int kvmppc_get_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 	case KVM_REG_PPC_ONLINE:
 		*val = get_reg_val(id, vcpu->arch.online);
 	case KVM_REG_PPC_PEND_EXCEP:
+		pr_emerg("%d vcpu: %d\n", smp_processor_id(), vcpu->vcpu_id);
 		*val = get_reg_val(id, vcpu->arch.pending_exceptions);
 		break;
 	default:
