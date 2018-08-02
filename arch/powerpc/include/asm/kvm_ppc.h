@@ -366,6 +366,8 @@ static inline bool is_kvmppc_hv_enabled(struct kvm *kvm)
 
 extern int kvmppc_hwrng_present(void);
 
+extern void addlog(const char *what, struct kvm_vcpu *vcpu, u64 data);
+
 /*
  * Cuts out inst bits with ordering according to spec.
  * That means the leftmost bit is zero. All given bits are included.

@@ -30,6 +30,7 @@
 #include <asm/io.h>
 #include <asm/opal.h>
 #include <asm/smp.h>
+#include <asm/atomic.h>
 
 #define KVM_CMA_CHUNK_ORDER	18
 
@@ -729,6 +730,44 @@ void kvmhv_p9_restore_lpcr(struct kvm_split_mode *sip)
 	smp_mb();
 	local_paca->kvm_hstate.kvm_split_mode = NULL;
 }
+
+struct thelog {
+	u16     what;
+	u8      vcpu;
+	u8      pcpu;
+	u32     time;
+	u64     data;
+};
+struct thelog *thelog;
+atomic_t thelogix;
+
+static int __init alloc_kvm_log(void)
+{
+	atomic_set(&thelogix, -1);
+	thelog = (void *) __get_free_pages(GFP_KERNEL|__GFP_ZERO|
+					   __GFP_NOWARN, 24 - PAGE_SHIFT);
+	pr_err("KVM log is at %llx\n", (u64) thelog);
+	return 0;
+}
+__initcall(alloc_kvm_log);
+
+void addlog(const char *what, struct kvm_vcpu *vcpu, u64 data)
+{
+	unsigned int i;
+	struct thelog *p;
+
+	p = thelog;
+	if (!p)
+		return;
+	i = atomic_inc_return(&thelogix) & 0xfffff;
+	p += i;
+	p->time = mftb() >> 9;
+	p->what = what[0] + (what[1] << 8);
+	p->vcpu = vcpu? vcpu->vcpu_id: -1;
+	p->pcpu = raw_smp_processor_id();
+	p->data = data;
+}
+EXPORT_SYMBOL_GPL(addlog);
 
 /*
  * Is there a PR_DOORBELL or H_DOORBELL pending for the guest?

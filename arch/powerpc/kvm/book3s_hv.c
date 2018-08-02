@@ -1148,6 +1148,9 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	run->ready_for_interrupt_injection = 1;
 #ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 	if (vcpu->arch.cur_nest) {
+		if (vcpu->arch.trap == BOOK3S_INTERRUPT_SYSCALL) {
+			addlog("SC", vcpu, kvmppc_get_gpr(vcpu, 3));
+		}
 		return kvmppc_handle_trap_nested(run, vcpu, tsk);
 	}
 #endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
