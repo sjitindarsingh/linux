@@ -187,8 +187,8 @@ int kvmppc_mmu_radix_xlate(struct kvm_vcpu *vcpu, gva_t eaddr,
 						pid, true);
 }
 
-static void kvmppc_radix_tlbie_page(struct kvm *kvm, unsigned long addr,
-				    unsigned int pshift)
+void kvmppc_radix_tlbie_page_lpid(unsigned long addr, unsigned int pshift,
+				  int lpid)
 {
 	unsigned long psize = PAGE_SIZE;
 
@@ -196,7 +196,13 @@ static void kvmppc_radix_tlbie_page(struct kvm *kvm, unsigned long addr,
 		psize = 1UL << pshift;
 
 	addr &= ~(psize - 1);
-	radix__flush_tlb_lpid_page(kvm->arch.lpid, addr, psize);
+	radix__flush_tlb_lpid_page(lpid, addr, psize);
+}
+
+static void kvmppc_radix_tlbie_page(struct kvm *kvm, unsigned long addr,
+				    unsigned int pshift)
+{
+	kvmppc_radix_tlbie_page_lpid(addr, pshift, kvm->arch.lpid);
 }
 
 static void kvmppc_radix_flush_pwc(struct kvm *kvm)

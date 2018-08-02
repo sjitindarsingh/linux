@@ -194,6 +194,8 @@ extern int kvmppc_mmu_radix_translate_table(struct kvm_vcpu *vcpu, gva_t eaddr,
 					    bool is_process_table);
 extern int kvmppc_mmu_radix_xlate(struct kvm_vcpu *vcpu, gva_t eaddr,
 			struct kvmppc_pte *gpte, bool data, bool iswrite);
+extern void kvmppc_radix_tlbie_page_lpid(unsigned long addr,
+					 unsigned int pshift, int lpid);
 extern int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			     unsigned long gpa, unsigned int level,
 			     unsigned long mmu_seq);
