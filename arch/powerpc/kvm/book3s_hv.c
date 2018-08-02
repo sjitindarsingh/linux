@@ -752,13 +752,13 @@ static bool kvmppc_doorbell_pending(struct kvm_vcpu *vcpu)
 	int thr;
 	struct kvmppc_vcore *vc;
 
-	if (vcpu->arch.doorbell_request)
+	if (test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+		     &vcpu->arch.pending_exceptions))
 		return true;
 	/*
 	 * Ensure that the read of vcore->dpdes comes after the read
-	 * of vcpu->doorbell_request.  This barrier matches the
-	 * lwsync in book3s_hv_rmhandlers.S just before the
-	 * fast_guest_return label.
+	 * of vcpu->arch.pending_exceptions. This barrier matches the
+	 * __smp_lwsync in book3s_hv_builtin.c
 	 */
 	smp_rmb();
 	vc = vcpu->arch.vcore;
@@ -1084,8 +1084,10 @@ static int kvmppc_emulate_doorbell_instr(struct kvm_vcpu *vcpu)
 		tvcpu = kvmppc_find_vcpu(kvm, vcpu->vcpu_id - thr + arg);
 		if (!tvcpu)
 			break;
-		if (!tvcpu->arch.doorbell_request) {
-			tvcpu->arch.doorbell_request = 1;
+		if (!test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+			      &tvcpu->arch.pending_exceptions)) {
+			kvmppc_book3s_queue_irqprio(tvcpu,
+						    BOOK3S_INTERRUPT_DOORBELL);
 			kvmppc_fast_vcpu_kick_hv(tvcpu);
 		}
 		break;
@@ -1094,7 +1096,7 @@ static int kvmppc_emulate_doorbell_instr(struct kvm_vcpu *vcpu)
 		if (((arg >> 27) & 0xf) != PPC_DBELL_SERVER)
 			break;
 		vcpu->arch.vcore->dpdes = 0;
-		vcpu->arch.doorbell_request = 0;
+		kvmppc_book3s_dequeue_irqprio(vcpu, BOOK3S_INTERRUPT_DOORBELL);
 		break;
 	case OP_31_XOP_MFSPR:
 		switch (get_sprn(inst)) {

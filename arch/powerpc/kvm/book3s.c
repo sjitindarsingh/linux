@@ -157,6 +157,7 @@ static int kvmppc_book3s_vec2irqprio(unsigned int vec)
 	case 0x800: prio = BOOK3S_IRQPRIO_FP_UNAVAIL;		break;
 	case 0x900: prio = BOOK3S_IRQPRIO_DECREMENTER;		break;
 	case 0x980: prio = BOOK3S_IRQPRIO_H_DECREMENTER;	break;
+	case 0xa00: prio = BOOK3S_IRQPRIO_PR_DOORBELL;		break;
 	case 0xc00: prio = BOOK3S_IRQPRIO_SYSCALL;		break;
 	case 0xd00: prio = BOOK3S_IRQPRIO_DEBUG;		break;
 	case 0xe80: prio = BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL;	break;

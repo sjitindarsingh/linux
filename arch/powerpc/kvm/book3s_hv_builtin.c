@@ -729,3 +729,41 @@ void kvmhv_p9_restore_lpcr(struct kvm_split_mode *sip)
 	smp_mb();
 	local_paca->kvm_hstate.kvm_split_mode = NULL;
 }
+
+/*
+ * Is there a PR_DOORBELL pending for the guest?
+ * Can we inject a Decrementer or a External interrupt?
+ */
+int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
+{
+	if (test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+		     &vcpu->arch.pending_exceptions)) {
+		mtspr(SPRN_DPDES, 1);
+		vcpu->arch.vcore->dpdes = 1;
+		__smp_lwsync();
+		clear_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+			  &vcpu->arch.pending_exceptions);
+	}
+	if (vcpu->arch.shregs.msr & MSR_EE) {
+		if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+			     &vcpu->arch.pending_exceptions)) {
+			return BOOK3S_INTERRUPT_EXTERNAL;
+		} else {
+			unsigned long dec = mfspr(SPRN_DEC);
+			unsigned long mask = 1ULL << 31;
+			if (cpu_has_feature(CPU_FTR_ARCH_300)) {
+				if (lpcr & LPCR_LD)
+					mask <<= 32;
+			}
+			if (dec & mask)
+				return BOOK3S_INTERRUPT_DECREMENTER;
++			}
+	} else {
+		if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+			     &vcpu->arch.pending_exceptions)) {
+			mtspr(SPRN_LPCR, mfspr(SPRN_LPCR) | LPCR_MER);
+		}
+	}
+
+	return 0;
+}

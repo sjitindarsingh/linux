@@ -1104,83 +1104,43 @@ ALT_FTR_SECTION_END_IFCLR(CPU_FTR_ARCH_300)
 no_xive:
 #endif /* CONFIG_KVM_XICS */
 
-deliver_guest_interrupt:
-	ld	r6, VCPU_CTR(r4)
-	ld	r7, VCPU_XER(r4)
-
-	mtctr	r6
-	mtxer	r7
-
-kvmppc_cede_reentry:		/* r4 = vcpu, r13 = paca */
+deliver_guest_interrupt:	/* r4 = vcpu, r13 = paca */
+	mr	r3, r4
+	bl	kvmppc_guest_entry_inject_int
+	cmpdi	r3, 0
+	ld      r4, HSTATE_KVM_VCPU(r13)
+	blt	70f
 	ld	r10, VCPU_PC(r4)
 	ld	r11, VCPU_MSR(r4)
-	ld	r6, VCPU_SRR0(r4)
-	ld	r7, VCPU_SRR1(r4)
-	mtspr	SPRN_SRR0, r6
-	mtspr	SPRN_SRR1, r7
-
 	/* r11 = vcpu->arch.msr & ~MSR_HV */
 	rldicl	r11, r11, 63 - MSR_HV_LG, 1
 	rotldi	r11, r11, 1 + MSR_HV_LG
 	ori	r11, r11, MSR_ME
+	ld	r6, VCPU_CTR(r4)
+	ld	r7, VCPU_XER(r4)
+	mtctr	r6
+	mtxer	r7
+	bne	12f
+	ld	r6, VCPU_SRR0(r4)
+	ld	r7, VCPU_SRR1(r4)
+	mtspr	SPRN_SRR0, r6
+	mtspr	SPRN_SRR1, r7
+	b	fast_guest_return
 
-	/* Check if we can deliver an external or decrementer interrupt now */
-	ld	r0, VCPU_PENDING_EXC(r4)
-	rldicl	r0, r0, 64 - BOOK3S_IRQPRIO_EXTERNAL_LEVEL, 63
-	cmpdi	cr1, r0, 0
-	rldicl.	r6, r0, 64 - BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL, 63
-	beq	35f
-	/* Set host_ipi in the paca so we exit to the host when interrupted */
-	li	r7, 1
-	stb	r7, HSTATE_HOST_IPI(r13)
-35:
-	andi.	r8, r11, MSR_EE
-	mfspr	r8, SPRN_LPCR
-	/* Insert (EXTERNAL_LEVEL | HV_DOORBELL) bit into LPCR[MER] */
-	or	r0, r0, r6
-	rldimi	r8, r0, LPCR_MER_SH, 63 - LPCR_MER_SH
-	/* LPCR[LPES0] = LPCR[LPES0] & ~HV_DOORBELL */
-	rldic	r6, r6, LPCR_LPES0_SH, 63 - LPCR_LPES0_SH
-	andc	r8, r8, r6
-	mtspr	SPRN_LPCR, r8
-	isync
-	beq	5f
-	li	r0, BOOK3S_INTERRUPT_EXTERNAL
-	bne	cr1, 12f
-	mfspr	r0, SPRN_DEC
-BEGIN_FTR_SECTION
-	/* On POWER9 check whether the guest has large decrementer enabled */
-	andis.	r8, r8, LPCR_LD@h
-	bne	15f
-END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
-	extsw	r0, r0
-15:	cmpdi	r0, 0
-	li	r0, BOOK3S_INTERRUPT_DECREMENTER
-	bge	5f
+70:	li	r12, 0
+	stw	r12, VCPU_TRAP(r4)
+	mr	r9, r4
+#ifdef CONFIG_KVM_BOOK3S_HV_EXIT_TIMING
+	addi	r3, r4, VCPU_TB_RMEXIT
+	bl	kvmhv_accumulate_time
+#endif
+	b       guest_bypass
 
 12:	mtspr	SPRN_SRR0, r10
-	mr	r10,r0
+	mr	r10,r3
 	mtspr	SPRN_SRR1, r11
 	mr	r9, r4
 	bl	kvmppc_msr_interrupt
-5:
-BEGIN_FTR_SECTION
-	b	fast_guest_return
-END_FTR_SECTION_IFCLR(CPU_FTR_ARCH_300)
-	/* On POWER9, check for pending doorbell requests */
-	lbz	r0, VCPU_DBELL_REQ(r4)
-	cmpwi	r0, 0
-	beq	fast_guest_return
-	ld	r5, HSTATE_KVM_VCORE(r13)
-	/* Set DPDES register so the CPU will take a doorbell interrupt */
-	li	r0, 1
-	mtspr	SPRN_DPDES, r0
-	std	r0, VCORE_DPDES(r5)
-	/* Make sure other cpus see vcore->dpdes set before dbell req clear */
-	lwsync
-	/* Clear the pending doorbell request */
-	li	r0, 0
-	stb	r0, VCPU_DBELL_REQ(r4)
 
 /*
  * Required state:
@@ -2702,6 +2662,12 @@ _GLOBAL(kvmppc_h_cede)		/* r3 = vcpu pointer, r11 = msr, r13 = paca */
 	std	r30, VCPU_GPR(R30)(r3)
 	std	r31, VCPU_GPR(R31)(r3)
 
+	/* save ctr & xer */
+	mfctr	r4
+	mfxer	r5
+	std	r4, VCPU_CTR(r3)
+	std	r5, VCPU_XER(r3)
+
 	/* save FP state */
 	bl	kvmppc_save_fp
 
@@ -2912,7 +2878,7 @@ END_FTR_SECTION(CPU_FTR_TM | CPU_FTR_P9_TM_HV_ASSIST, 0)
 	cmpwi	r0,0x100
 	bge	guest_exit_cont
 
-	b	kvmppc_cede_reentry	/* if not go back to guest */
+	b	deliver_guest_interrupt	/* if not go back to guest */
 
 	/* cede when already previously prodded case */
 kvm_cede_prodded:

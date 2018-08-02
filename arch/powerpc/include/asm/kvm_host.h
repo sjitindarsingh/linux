@@ -716,7 +716,6 @@ struct kvm_vcpu_arch {
 	unsigned long pending_exceptions;
 	u8 ceded;
 	u8 prodded;
-	u8 doorbell_request;
 	u8 irq_pending; /* Used by XIVE to signal pending guest irqs */
 	u32 last_inst;
 
