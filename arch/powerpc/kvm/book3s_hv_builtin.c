@@ -731,38 +731,71 @@ void kvmhv_p9_restore_lpcr(struct kvm_split_mode *sip)
 }
 
 /*
- * Is there a PR_DOORBELL pending for the guest?
+ * Is there a PR_DOORBELL or H_DOORBELL pending for the guest?
+ * - If yes and we're entering a nested guest, then don't enter so we can exit
+ *   the nested guest
+ * - If H_DOORBELL pending then we need a mediated external interrupt
+ * - If PR_DOORBELL pending then inject it
+ * - If No:
  * Can we inject a Decrementer or a External interrupt?
  */
 int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 {
-	if (test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
-		     &vcpu->arch.pending_exceptions)) {
-		mtspr(SPRN_DPDES, 1);
-		vcpu->arch.vcore->dpdes = 1;
-		__smp_lwsync();
-		clear_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
-			  &vcpu->arch.pending_exceptions);
-	}
-	if (vcpu->arch.shregs.msr & MSR_EE) {
-		if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	if (vcpu->arch.cur_nest) {
+		if (test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
 			     &vcpu->arch.pending_exceptions)) {
-			return BOOK3S_INTERRUPT_EXTERNAL;
-		} else {
-			unsigned long dec = mfspr(SPRN_DEC);
-			unsigned long mask = 1ULL << 31;
-			if (cpu_has_feature(CPU_FTR_ARCH_300)) {
-				if (lpcr & LPCR_LD)
-					mask <<= 32;
-			}
-			if (dec & mask)
-				return BOOK3S_INTERRUPT_DECREMENTER;
-+			}
-	} else {
-		if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
-			     &vcpu->arch.pending_exceptions)) {
-			mtspr(SPRN_LPCR, mfspr(SPRN_LPCR) | LPCR_MER);
+			return -1;
 		}
+		if (test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+			     &vcpu->arch.pending_exceptions)) {
+			return -1;
+		}
+	} else
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
+	{
+		unsigned long lpcr = mfspr(SPRN_LPCR);
+		bool write_lpcr = false;
+		if (test_bit(BOOK3S_IRQPRIO_DIRECTED_H_DOORBELL,
+			     &vcpu->arch.pending_exceptions)) {
+			/* Set LPCR[MER], clear LPCR[LPES0] and set host IPI */
+			lpcr |= LPCR_MER;
+			lpcr &= ~LPCR_LPES0;
+			write_lpcr = true;
+			local_paca->kvm_hstate.host_ipi = 1;
+		}
+		if (test_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+			     &vcpu->arch.pending_exceptions)) {
+			mtspr(SPRN_DPDES, 1);
+			vcpu->arch.vcore->dpdes = 1;
+			__smp_lwsync();
+			clear_bit(BOOK3S_IRQPRIO_PR_DOORBELL,
+				  &vcpu->arch.pending_exceptions);
+		}
+		if (vcpu->arch.shregs.msr & MSR_EE) {
+			if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+				     &vcpu->arch.pending_exceptions)) {
+				return BOOK3S_INTERRUPT_EXTERNAL;
+			} else {
+				unsigned long dec = mfspr(SPRN_DEC);
+				unsigned long mask = 1ULL << 31;
+				if (cpu_has_feature(CPU_FTR_ARCH_300)) {
+					if (lpcr & LPCR_LD)
+						mask <<= 32;
+				}
+				if (dec & mask)
+					return BOOK3S_INTERRUPT_DECREMENTER;
+
+			}
+		} else {
+			if (test_bit(BOOK3S_INTERRUPT_EXTERNAL,
+				     &vcpu->arch.pending_exceptions)) {
+				lpcr |= LPCR_MER;
+				write_lpcr = true;
+			}
+		}
+		if (write_lpcr)
+			mtspr(SPRN_LPCR, lpcr);
 	}
 
 	return 0;

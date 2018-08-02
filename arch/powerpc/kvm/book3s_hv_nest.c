@@ -746,12 +746,6 @@ static void kvmppc_nested_reg_entry_switch(struct kvm_vcpu *vcpu)
 	hv_reg_switch(&vcpu->arch.hv_regs.pcr, &vcpu->arch.vcore->pcr);
 	hv_reg_switch(&vcpu->arch.hv_regs.amor, &vcpu->arch.amor);
 
-	if (vcpu->arch.vcore->dpdes) {
-		/* There is still one pending for the L1 Guest */
-		vcpu->arch.doorbell_request = 1;
-	}
-	vcpu->arch.vcore->dpdes = vcpu->arch.hv_regs.nested_dpdes;
-
 	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
 }
 
@@ -795,7 +789,7 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 	/* Init the shadow page table (if required) */
 	if (!nested->shadow_pgtable) {
 		rc = kvmppc_init_pgtable_radix(vcpu->kvm,
-					       &nested->shadow_pgtable);
+				&nested->shadow_pgtable);
 		if (rc) {
 			goto fail_unlock;
 		}
@@ -844,9 +838,6 @@ static void kvmppc_nested_reg_exit_switch(struct kvm_vcpu *vcpu)
 	reg_switch(&vcpu->arch.hv_regs.pcr.val, &vcpu->arch.vcore->pcr);
 	reg_switch(&vcpu->arch.hv_regs.amor.val, &vcpu->arch.amor);
 
-	vcpu->arch.hv_regs.nested_dpdes = vcpu->arch.vcore->dpdes & 0x1ULL;
-	vcpu->arch.vcore->dpdes = 0;
-
 	kvmppc_update_intr_msr(&vcpu->arch.intr_msr, vcpu->arch.vcore->lpcr);
 }
 
@@ -882,7 +873,8 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	switch (sprn) {
 	case SPRN_DPDES:
-		vcpu->arch.hv_regs.nested_dpdes = val & 0x1UL;
+		vcpu->arch.vcore->dpdes &= ~0x1UL;
+		vcpu->arch.vcore->dpdes |= val & 0x1UL;
 		rc = EMULATE_DONE;
 		break;
 	case SPRN_DAWR:

@@ -1388,10 +1388,17 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 	mr	r4,r9
 	bge	fast_guest_return
 2:
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	ld	r4, VCPU_CUR_NEST(r9)
+	cmpdi	cr1, r4, 0		/* Use cr1 as indication of nested */
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 	/* See if this is an hcall we can handle in real mode */
 	cmpwi	r12,BOOK3S_INTERRUPT_SYSCALL
-	beq	hcall_try_real_mode
+	bne	75f
+	bne	cr1, guest_exit_cont	/* If nested then just continue out */
+	b	hcall_try_real_mode
 
+75:
 	/* Hypervisor doorbell - exit only if host IPI or H_DBELL_REQ flag set */
 	cmpwi	r12, BOOK3S_INTERRUPT_H_DOORBELL
 	bne	3f
@@ -1399,6 +1406,7 @@ BEGIN_FTR_SECTION
 	PPC_MSGSYNC
 	lwsync
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
+	bne	cr1, guest_exit_cont
 	lbz	r0, HSTATE_HOST_IPI(r13)
 	cmpwi	r0, 0
 	beq	4f
@@ -1414,6 +1422,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	/* External interrupt ? */
 	cmpwi	r12, BOOK3S_INTERRUPT_EXTERNAL
 	bne+	guest_exit_cont
+	bne	cr1, guest_exit_cont
 
 	/* External interrupt, first check for host_ipi. If this is
 	 * set, we know the host wants us out so let's do it now
@@ -2288,12 +2297,6 @@ hcall_try_real_mode:
 	andi.	r0,r11,MSR_PR
 	/* sc 1 from userspace - reflect to guest syscall */
 	bne	sc_1_fast_return
-#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
-	/* If nested guest continue exiting so we get to the nested handler */
-	ld	r4, VCPU_CUR_NEST(r9)
-	cmpdi	r4, 0
-	bne	guest_exit_cont
-#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 	clrrdi	r3,r3,2
 	cmpldi	r3,hcall_real_table_end - hcall_real_table
 	bge	guest_exit_cont

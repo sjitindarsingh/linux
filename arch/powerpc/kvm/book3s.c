@@ -317,6 +317,18 @@ static int kvmppc_book3s_irqprio_deliver(struct kvm_vcpu *vcpu,
 	case BOOK3S_IRQPRIO_PROGRAM:
 		vec = BOOK3S_INTERRUPT_PROGRAM;
 		break;
+	case BOOK3S_IRQPRIO_PR_DOORBELL:
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		if (vcpu->arch.cur_nest) {
+			/* We can inject the interrupt immediately */
+			vec = BOOK3S_INTERRUPT_DOORBELL;
+		} else
+#endif
+		{
+			/* We'll deliver on guest entry path */
+			deliver = 0;
+		}
+		break;
 	case BOOK3S_IRQPRIO_VSX:
 		vec = BOOK3S_INTERRUPT_VSX;
 		break;

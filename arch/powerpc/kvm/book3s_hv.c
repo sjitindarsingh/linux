@@ -757,8 +757,8 @@ static bool kvmppc_doorbell_pending(struct kvm_vcpu *vcpu)
 		return true;
 	/*
 	 * Ensure that the read of vcore->dpdes comes after the read
-	 * of vcpu->arch.pending_exceptions. This barrier matches the
-	 * __smp_lwsync in book3s_hv_builtin.c
+	 * of vcpu->arch.pending_exceptions.  This barrier matches the
+	 * smp_rmb() in book3s.c just after "case BOOK3S_IRQPRIO_PR_DOORBELL:".
 	 */
 	smp_rmb();
 	vc = vcpu->arch.vcore;
