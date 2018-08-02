@@ -84,11 +84,6 @@
 /* #define EXIT_DEBUG_SIMPLE */
 /* #define EXIT_DEBUG_INT */
 
-/* Used to indicate that a guest page fault needs to be handled */
-#define RESUME_PAGE_FAULT	(RESUME_GUEST | RESUME_FLAG_ARCH1)
-/* Used to indicate that a guest passthrough interrupt needs to be handled */
-#define RESUME_PASSTHROUGH	(RESUME_GUEST | RESUME_FLAG_ARCH2)
-
 /* Used as a "null" value for timebase values */
 #define TB_NIL	(~(u64)0)
 

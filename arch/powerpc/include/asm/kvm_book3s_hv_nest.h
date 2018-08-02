@@ -55,9 +55,17 @@ struct kvm_arch_nested {
 	u64 process_table;              /* process table entry for this guest */
 };
 
+unsigned long kvmppc_radix_remove_nest_pte(struct kvm *kvm, pte_t *ptep,
+					   unsigned long addr,
+					   unsigned int shift,
+					   unsigned int lpid);
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu);
 int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			unsigned int instr);
+int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
+					  struct kvm_vcpu *vcpu,
+					  unsigned long ea,
+					  unsigned long dsisr);
 int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			      struct task_struct *tsk);
 void kvmppc_init_vm_hv_nest(struct kvm *kvm);

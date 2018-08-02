@@ -24,6 +24,11 @@
 #include <linux/kvm_host.h>
 #include <asm/kvm_book3s_asm.h>
 
+/* Used to indicate that a guest page fault needs to be handled */
+#define RESUME_PAGE_FAULT       (RESUME_GUEST | RESUME_FLAG_ARCH1)
+/* Used to indicate that a guest passthrough interrupt needs to be handled */
+#define RESUME_PASSTHROUGH      (RESUME_GUEST | RESUME_FLAG_ARCH2)
+
 struct kvmppc_bat {
 	u64 raw;
 	u32 bepi;
@@ -196,9 +201,14 @@ extern int kvmppc_mmu_radix_xlate(struct kvm_vcpu *vcpu, gva_t eaddr,
 			struct kvmppc_pte *gpte, bool data, bool iswrite);
 extern void kvmppc_radix_tlbie_page_lpid(unsigned long addr,
 					 unsigned int pshift, int lpid);
+extern unsigned long kvmppc_radix_update_pte(struct kvm *kvm, pte_t *ptep,
+					     unsigned long clr,
+					     unsigned long set,
+					     unsigned long addr,
+					     unsigned int shift);
 extern int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			     unsigned long gpa, unsigned int level,
-			     unsigned long mmu_seq);
+			     unsigned long mmu_seq, void *nested);
 extern void kvmppc_hv_handle_set_rc(struct kvm *kvm, pgd_t *pgtable,
 				    unsigned long *dsisr, unsigned long gpa);
 extern int kvmppc_book3s_handle_radix_page_fault(struct kvm_vcpu *vcpu,

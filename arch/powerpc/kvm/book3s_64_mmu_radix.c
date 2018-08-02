@@ -18,6 +18,7 @@
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/pte-walk.h>
+#include <asm/kvm_book3s_hv_nest.h>
 
 /*
  * Supported radix tree geometry.
@@ -210,7 +211,7 @@ static void kvmppc_radix_flush_pwc(struct kvm *kvm)
 	radix__flush_pwc_lpid(kvm->arch.lpid);
 }
 
-static unsigned long kvmppc_radix_update_pte(struct kvm *kvm, pte_t *ptep,
+unsigned long kvmppc_radix_update_pte(struct kvm *kvm, pte_t *ptep,
 				      unsigned long clr, unsigned long set,
 				      unsigned long addr, unsigned int shift)
 {
@@ -425,7 +426,7 @@ static void kvmppc_unmap_free_pud_entry_table(struct kvm *kvm, pud_t *pud,
 
 int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 		      unsigned long gpa, unsigned int level,
-		      unsigned long mmu_seq)
+		      unsigned long mmu_seq, void *nested)
 {
 	pgd_t *pgd;
 	pud_t *pud, *new_pud = NULL;
@@ -491,7 +492,16 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			goto out_unlock;
 		}
 		/* Valid 1GB page here already, remove it */
-		kvmppc_unmap_pte(kvm, (pte_t *)pud, hgpa, PUD_SHIFT);
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		if (nested) {
+			kvmppc_radix_remove_nest_pte(kvm, (pte_t *) pud, hgpa,
+				PUD_SHIFT,
+				((struct kvm_arch_nested *) nested)->lpid);
+		} else
+#endif
+		{
+			kvmppc_unmap_pte(kvm, (pte_t *)pud, hgpa, PUD_SHIFT);
+		}
 	}
 	if (level == 2) {
 		if (!pud_none(*pud)) {
@@ -540,7 +550,16 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			goto out_unlock;
 		}
 		/* Valid 2MB page here already, remove it */
-		kvmppc_unmap_pte(kvm, pmdp_ptep(pmd), lgpa, PMD_SHIFT);
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+		if (nested) {
+			kvmppc_radix_remove_nest_pte(kvm, pmdp_ptep(pmd), lgpa,
+				PMD_SHIFT,
+				((struct kvm_arch_nested *) nested)->lpid);
+		} else
+#endif
+		{
+			kvmppc_unmap_pte(kvm, pmdp_ptep(pmd), lgpa, PMD_SHIFT);
+		}
 	}
 	if (level == 1) {
 		if (!pmd_none(*pmd)) {
@@ -721,7 +740,7 @@ int kvmppc_book3s_handle_radix_page_fault(struct kvm_vcpu *vcpu,
 
 	/* Allocate space in the tree and write the PTE */
 	rc = kvmppc_create_pte(kvm, kvm->arch.pgtable, pte, gpa, level,
-			       mmu_seq);
+			       mmu_seq, NULL);
 	if (inserted_pte) {
 		*inserted_pte = pte;
 	}
@@ -759,6 +778,13 @@ int kvmppc_book3s_radix_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
 		return RESUME_GUEST;
 	}
+
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
+	if (vcpu->arch.cur_nest) {
+		return kvmppc_book3s_radix_page_fault_nested(run, vcpu, ea,
+							     dsisr);
+	}
+#endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */
 
 	/* Translate the logical address */
 	gpa = vcpu->arch.fault_gpa & ~0xfffUL;

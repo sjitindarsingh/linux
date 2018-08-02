@@ -17,10 +17,27 @@
 #include <asm/ppc-opcode.h>
 #include <asm/disassemble.h>
 #include <asm/kvm_ppc.h>
+#include <asm/kvm_book3s.h>
 #include <asm/kvm_book3s_hv_nest.h>
 #include <asm/book3s/64/mmu.h>
+#include <asm/pte-walk.h>
 
 #undef DEBUG
+
+unsigned long kvmppc_radix_remove_nest_pte(struct kvm *kvm, pte_t *ptep,
+					   unsigned long addr,
+					   unsigned int shift,
+					   unsigned int lpid)
+{
+	unsigned long old;
+
+	old = kvmppc_radix_update_pte(kvm, ptep, ~0UL, 0, addr, shift);
+	if (lpid) {
+		kvmppc_radix_tlbie_page_lpid(addr, shift, lpid);
+	}
+
+	return old;
+}
 
 void kvmppc_vcpu_nested_init(struct kvm_vcpu *vcpu)
 {
@@ -998,6 +1015,213 @@ inject_hisi:
 	return 1;
 }
 
+int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
+					  struct kvm_vcpu *vcpu,
+					  unsigned long ea, unsigned long dsisr)
+{
+	struct kvm_arch_nested *nested = vcpu->arch.cur_nest;
+	int p9_radix_level_shifts[4] = { PAGE_SHIFT,
+					 PMD_SHIFT,
+					 PUD_SHIFT,
+					 PGDIR_SHIFT };
+	struct kvm *kvm = vcpu->kvm;
+	struct kvm_memory_slot *memslot;
+	unsigned long gpa, fault_gpa, gfn, mask, perm = 0UL;
+	unsigned long mmu_seq;
+	unsigned long npages, base_gfn;
+	struct kvmppc_pte gpte;
+	bool writing = !!(dsisr & DSISR_ISSTORE);
+	bool kvm_ro = false;
+	unsigned int shift, nested_shift, max_shift, level;
+	pte_t pte, *ptep;
+	int rc;
+
+	WARN_ON(!nested);
+
+	fault_gpa = vcpu->arch.fault_gpa & ~0xF000000000000FFFULL;
+#ifdef DEBUG
+	pr_info("gpa: 0x%.16lx\n", fault_gpa);
+	pr_info("ea: 0x%.8lx\n", ea);
+	pr_info("dsisr: 0x%.8lx\n", dsisr);
+	pr_info("nested lpid: %u\n", nested->lpid);
+	pr_info("pc: 0x%.16lx\n", vcpu->arch.pc);
+	pr_info("msr: 0x%.16llx\n", vcpu->arch.shregs.msr);
+#endif
+
+	/* Failed to set the reference/change bits */
+	if (dsisr & DSISR_SET_RC) {
+		mutex_lock(&nested->lock);
+
+		if (!nested->shadow_pgtable) {
+			/* Someone has torn down the pgtable -> nothing to do */
+			mutex_unlock(&nested->lock);
+			return RESUME_GUEST;
+		}
+
+		kvmppc_hv_handle_set_rc(vcpu->kvm, nested->shadow_pgtable,
+					&dsisr, fault_gpa);
+		mutex_unlock(&nested->lock);
+		/*
+		 * XXX
+		 * - Should we also set the bit in the L1 partition table in L0?
+		 * - Should we reflect an interrupt to L1 to set the bit in the
+		 *   L2 partition table in L1?
+		 */
+
+		if (!(dsisr & (DSISR_BAD_FAULT_64S | DSISR_NOHPTE |
+			       DSISR_PROTFAULT | DSISR_SET_RC))) {
+			return RESUME_GUEST;
+		}
+	}
+
+	/*
+	 * We took an HISI or an HDSI while we were running the nested guest
+	 * which means our partition scoped translation for that guest failed.
+	 * Thus we need to insert a pte for this mapping into our shadow
+	 * partition table by:
+	 * 1. Walking the L1 guest partition table for this guest to convert
+	 *    the fault address into an L1 guest real address, or injecting
+	 *    an interrupt into the L1 guest if this translation doesn't exist
+	 * 2. Converting the L1 guest real address into a host real address
+	 *    through our (host) partition scoped tables for the L1 guest
+	 * 3. Inserting this translation into our (host) partition scoped
+	 *    table for the nested guest (into the shadow_pgtable)
+	 */
+
+	rc = kvmppc_book3s_translate_addr_nested(vcpu, fault_gpa, dsisr, &gpte);
+	if (rc < 0) {
+		return rc;
+	} else if (rc) {
+		return RESUME_GUEST;
+	}
+	nested_shift = mmu_psize_to_shift(gpte.page_size);
+	if (nested_shift < PAGE_SHIFT) {
+		/* We don't support L1 using a size less than our page size */
+		pr_err("KVM: Guest page shift (%d) < minimum supported (%d)\n",
+			nested_shift, PAGE_SHIFT);
+		return -EINVAL;
+	}
+	mask = (1UL << nested_shift) - PAGE_SIZE;
+	gpa = gpte.raddr & ~(0xF000000000000000ULL | mask);
+	/* Apply mask of fault_gpa to gpa incase backed by smaller page in L0 */
+	gpa |= (fault_gpa & mask);
+	gfn = gpa >> PAGE_SHIFT;
+	if (!(dsisr & DSISR_PRTABLE_FAULT)) {
+		gpa |= ea & 0xFFFULL;
+	}
+
+#ifdef DEBUG
+	pr_info("KVM: Nest RA 0x%.16lx -> L1 RA 0x%.16lx\n", fault_gpa, gpa);
+#endif
+
+	/* Get the corresponding memslot */
+	memslot = gfn_to_memslot(kvm, gfn);
+	if (!memslot || (memslot->flags & KVM_MEMSLOT_INVALID)) {
+		/*
+		 * If this was emulated mmio the guest shouldn't have inserted
+		 * a pte, some unusual error -> reflect to the guest as a DSI.
+		 */
+		pr_err("KVM: Invalid host memslot for nested guest pgfault 0x%.16lx\n",
+			gfn);
+		kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
+		return RESUME_GUEST;
+	} else if (memslot->flags & KVM_MEM_READONLY) {
+		kvm_ro = true;
+	}
+
+	/* used to check for invalidations in progress */
+	mmu_seq = kvm->mmu_notifier_seq;
+	smp_rmb();
+
+	/* See if can find translation in L0 partition scoped tables for L1 */
+	spin_lock(&kvm->mmu_lock);
+	ptep = __find_linux_pte(kvm->arch.pgtable, gpa, NULL, &shift);
+	spin_unlock(&kvm->mmu_lock);
+
+	if (ptep && pte_present(*ptep)) {
+		pte = *ptep;
+
+#ifdef DEBUG
+		pr_info("KVM: L1 RA 0x%.16lx -> PTE 0x%.16lx (existing)\n",
+			gpa, pte_val(pte));
+#endif
+
+		if (writing && !(pte_val(pte) & _PAGE_WRITE)) {
+			ptep = NULL;
+		}
+	}
+	/* No pte found -> insert mapping in L0 partition table for L1 guest */
+	if (!ptep || !pte_present(*ptep)) {
+		rc = kvmppc_book3s_handle_radix_page_fault(vcpu, gpa, memslot,
+							   writing, kvm_ro,
+							   &pte, &level);
+		if (rc == -EAGAIN) {
+			return RESUME_GUEST;
+		} else if (rc) {
+			return rc;
+		}
+		shift = p9_radix_level_shifts[level];
+#ifdef DEBUG
+		pr_info("KVM: L1 RA 0x%.16lx -> PTE 0x%.16lx (new)\n",
+			gpa, pte_val(pte));
+#endif
+	}
+
+#ifdef DEBUG
+	pr_info("KVM: nest shift: %d host shift: %d\n", nested_shift, shift);
+#endif
+
+	/* The permission is the combination of the host and L1 guest ptes */
+	if (!gpte.may_read)
+		perm |= _PAGE_READ;
+	if (!gpte.may_write)
+		perm |= _PAGE_WRITE;
+	if (!gpte.may_execute)
+		perm |= _PAGE_EXEC;
+	pte = __pte(pte_val(pte) & ~perm);
+	/* Compute the PTE that we need to insert */
+	level = 0;
+	/* What's the biggest pte we can insert? */
+	max_shift = min(shift, nested_shift);
+	if (max_shift >= PUD_SHIFT) {
+		level = 2;
+	} else if (max_shift >= PMD_SHIFT) {
+		level = 1;
+	}
+	if (shift > nested_shift) {
+		/*
+		 * L0 page is larger than L1 page, apply the L1 index
+		 * to the L0 pte since we will insert the smaller page.
+		 */
+		mask = (1UL << shift) - (1UL << nested_shift);
+		pte = __pte(pte_val(pte) | (gpa & mask));
+	}
+
+	shift = p9_radix_level_shifts[level]; /* what size pte did we insert */
+	mask = ~((1UL << shift) - 1);
+	fault_gpa &= mask;
+
+	/*
+	 * The only way this can happen is if another thread freed the page
+	 * table while we were running the nested guest, which shouldn't be
+	 * possible.
+	 */
+	WARN_ON(!nested->shadow_pgtable);
+
+	/* Insert the pte into our shadow_pgtable */
+	rc = kvmppc_create_pte(kvm, nested->shadow_pgtable, pte,
+			       fault_gpa, level, mmu_seq, nested);
+	mutex_unlock(&nested->lock);
+	if (rc) {
+		if (rc == -EAGAIN) {
+			/* Go back to the guest so it can try again */
+			rc = RESUME_GUEST;
+		}
+	}
+
+	return rc;
+}
+
 int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			      struct task_struct *tsk)
 {
@@ -1026,9 +1250,23 @@ int kvmppc_handle_trap_nested(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			rc = RESUME_GUEST;
 			break;
 		}
-	case BOOK3S_INTERRUPT_SYSCALL:
-	case BOOK3S_INTERRUPT_H_DATA_STORAGE:
+	/*
+	 * We get these two when the hardware was unable to perform partition
+	 * scoped translation of the nested guest real address. This means we're
+	 * lacking the translation in the shadow_pgtable for this nested guest.
+	 * By returning RESUME_PAGE_FAULT we'll continue the exit path and call
+	 * into kvmppc_book3s_radix_page_fault() where an entry will be inserted
+	 */
 	case BOOK3S_INTERRUPT_H_INST_STORAGE:
+		vcpu->arch.fault_dar = kvmppc_get_pc(vcpu);
+		vcpu->arch.fault_dsisr = 0;
+	case BOOK3S_INTERRUPT_H_DATA_STORAGE:
+		rc = RESUME_PAGE_FAULT;
+#ifdef DEBUG
+		pr_info("Page Fault in Nested Guest: 0x%x\n", vcpu->arch.trap);
+#endif
+		break;
+	case BOOK3S_INTERRUPT_SYSCALL:
 	case BOOK3S_INTERRUPT_H_DOORBELL:
 	case BOOK3S_INTERRUPT_H_VIRT:
 	case BOOK3S_INTERRUPT_SYSTEM_RESET:
