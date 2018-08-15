@@ -946,14 +946,16 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/*
 		 * We want to avoid the case where the timebase ever goes
 		 * backwards for a guest. So we keep track of the offset on a
-		 * per nested guest basis and only ever let the offset
-		 * increase. In the event it decreases we use the last known
-		 * offset. If the offset is zero (uninitialised) then we can of
-		 * course let it go negative the first time it's set.
+		 * per nested guest basis and only ever let the time the guest
+		 * sees increase. That means either the offset has to increase
+		 * or the tb value (current tb + intended offset) has to be
+		 * greater than any the guest has seen before (this decrease of
+		 * the offset occurs when qemu accounts for suspended time).
 		 */
 		{
 			struct kvm_arch_nested *nested;
-			signed long offset = ALIGN(val - mftb(), 1UL << 24);
+			signed long tb = mftb();
+			signed long offset = ALIGN(val - tb, 1UL << 24);
 
 			nested = kvmppc_find_nested(vcpu->kvm,
 						    vcpu->arch.shadow_lpid);
@@ -963,10 +965,27 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				return EMULATE_DONE;
 			}
 			mutex_lock(&nested->lock);
-			if (offset > nested->tb_offset) {
+			if (offset >= nested->tb_offset) {
+				/* Offset unchanged or increased -> update it */
 				nested->tb_offset = offset;
-				pr_info("%d: lpid %d offset set to %ld\n", vcpu->vcpu_id, nested->lpid, offset);
+#ifdef DEBUG
+				pr_info("Nested guest timebase (%d) offset set to %ld\n",
+					nested->lpid, offset);
+#endif
+			} else if ((tb + val) > nested->min_tb_seen) {
+				/* Not trying to move tb back -> set offset */
+				nested->min_tb_seen = tb + val;
+				nested->tb_offset = offset;
+#ifdef DEBUG
+				pr_info("Nested guest timebase (%d) offset set to %ld\n",
+					nested->lpid, offset);
+#endif
 			}
+#ifdef DEBUG
+			else
+				pr_info("Guest prevented from rewinding nest timebase (%d) to %ld (offset %ld)\n",
+					nested->lpid, tb + val, offset);
+#endif
 
 			/* L1 is expecting to run with the nested offset now */
 			vcpu->arch.vcore->eff_tb_offset = (u64 *) &nested->tb_offset;
