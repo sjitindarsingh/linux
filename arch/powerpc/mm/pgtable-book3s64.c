@@ -219,7 +219,7 @@ void mmu_partition_table_set_entry(unsigned int lpid, unsigned long dw0,
 	 * use of this partition ID was, not the new use.
 	 */
 	asm volatile("ptesync" : : : "memory");
-	if (old & PATB_HR) {
+	if (old & PATB_HR || cpu_has_feature(CPU_FTR_NESTED_HV)) {
 		asm volatile(PPC_TLBIE_5(%0,%1,2,0,1) : :
 			     "r" (TLBIEL_INVAL_SET_LPID), "r" (lpid));
 		asm volatile(PPC_TLBIE_5(%0,%1,2,1,1) : :
