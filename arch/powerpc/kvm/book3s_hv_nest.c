@@ -495,13 +495,13 @@ static int kvmppc_emulate_priv_tlbie(struct kvm_vcpu *vcpu, unsigned int instr)
 	ric = get_ric(instr);
 	prs = get_prs(instr);
 	r = get_r(instr);
-	lpid = get_lpid(vcpu->arch.gpr[rs]);
-	is = get_is(vcpu->arch.gpr[rb]);
+	lpid = get_lpid(kvmppc_get_gpr(vcpu, rs));
+	is = get_is(kvmppc_get_gpr(vcpu, rb));
 	if (!is) {
 		int shift;
 
-		epn = get_epn(vcpu->arch.gpr[rb]);
-		ap = get_ap(vcpu->arch.gpr[rb]);
+		epn = get_epn(kvmppc_get_gpr(vcpu, rb));
+		ap = get_ap(kvmppc_get_gpr(vcpu, rb));
 		shift = ap_encoding_to_shift(ap);
 		if (!shift) {
 			pr_err("KVM: Invalid ap encoding (0x%x) in tlbie instr\n",
@@ -782,7 +782,7 @@ static int kvmppc_enter_nested(struct kvm_vcpu *vcpu)
 
 	if (!vcpu->arch.shadow_lpid) {
 		pr_info("HRFID but !LPID\n");
-		pr_info("[%d] msr: 0x%.16llx pc: 0x%.16lx\n", vcpu->vcpu_id, vcpu->arch.shregs.msr, vcpu->arch.pc);
+		pr_info("[%d] msr: 0x%.16llx pc: 0x%.16lx\n", vcpu->vcpu_id, vcpu->arch.shregs.msr, kvmppc_get_pc(vcpu));
 		pr_info("-->> msr: 0x%.16lx pc: 0x%.16lx\n", vcpu->arch.hv_regs.hsrr1, vcpu->arch.hv_regs.hsrr0);
 		goto no_nest;
 	}
@@ -836,7 +836,7 @@ no_nest:
 	kvmppc_nested_reg_entry_switch(vcpu);
 
 no_switch:
-	vcpu->arch.pc = vcpu->arch.hv_regs.hsrr0;
+	kvmppc_set_pc(vcpu, vcpu->arch.hv_regs.hsrr0);
 	vcpu->arch.shregs.msr = vcpu->arch.hv_regs.hsrr1 & ~MSR_HV;
 
 	return EMULATE_DONE;
@@ -893,7 +893,7 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	rs = get_rs(instr);
 	sprn = get_sprn(instr);
-	val = vcpu->arch.gpr[rs];
+	val = kvmppc_get_gpr(vcpu, rs);
 
 	switch (sprn) {
 	case SPRN_DPDES:
@@ -1110,7 +1110,7 @@ static int kvmppc_emulate_priv_mtspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 #ifdef DEBUG
 	if (rc == EMULATE_FAIL)
-		pr_info("%s: mtspr %d,0x%.16lx\n", __func__, sprn, vcpu->arch.gpr[rs]);
+		pr_info("%s: mtspr %d,0x%.16lx\n", __func__, sprn, kvmppc_get_gpr(vcpu, rs));
 #endif
 
 	return rc;
@@ -1124,7 +1124,7 @@ static int kvmppc_emulate_priv_mfspr(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	rt = get_rt(instr);
 	sprn = get_sprn(instr);
-	val = &vcpu->arch.gpr[rt];
+	val = &vcpu->arch.regs.gpr[rt];
 
 	switch (sprn) {
 	case SPRN_DAWR:
@@ -1256,9 +1256,9 @@ static int kvmppc_emulate_msgsnd(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	int rb;
 
 	rb = get_rb(instr);
-	msgtype = get_msgtype(vcpu->arch.gpr[rb]);
-	bcast = get_bcast(vcpu->arch.gpr[rb]);
-	procid = get_procid(vcpu->arch.gpr[rb]);
+	msgtype = get_msgtype(kvmppc_get_gpr(vcpu, rb));
+	bcast = get_bcast(kvmppc_get_gpr(vcpu, rb));
+	procid = get_procid(kvmppc_get_gpr(vcpu, rb));
 
 	if (msgtype != PPC_DBELL_SERVER) {
 		goto out; /* NO-OP */
@@ -1397,7 +1397,7 @@ int kvmppc_emulate_priv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		}
 
 		if (rc == EMULATE_DONE) {
-			vcpu->arch.pc += 4;
+			kvmppc_set_pc(vcpu, kvmppc_get_pc(vcpu) + 4);
 		}
 		break;
 	default:
@@ -1572,7 +1572,7 @@ int kvmppc_book3s_radix_page_fault_nested(struct kvm_run *run,
 	pr_info("ea: 0x%.8lx\n", ea);
 	pr_info("dsisr: 0x%.8lx\n", dsisr);
 	pr_info("nested lpid: %u\n", nested->lpid);
-	pr_info("pc: 0x%.16lx\n", vcpu->arch.pc);
+	pr_info("pc: 0x%.16lx\n", kvmppc_get_pc(vcpu));
 	pr_info("msr: 0x%.16llx\n", vcpu->arch.shregs.msr);
 #endif
 
