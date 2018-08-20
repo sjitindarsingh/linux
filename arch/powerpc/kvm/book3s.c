@@ -185,6 +185,7 @@ void kvmppc_book3s_dequeue_irqprio(struct kvm_vcpu *vcpu,
 	kvmppc_update_int_pending(vcpu, vcpu->arch.pending_exceptions,
 				  old_pending);
 }
+EXPORT_SYMBOL_GPL(kvmppc_book3s_dequeue_irqprio);
 
 void kvmppc_book3s_queue_irqprio(struct kvm_vcpu *vcpu, unsigned int vec)
 {
