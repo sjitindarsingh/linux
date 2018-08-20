@@ -135,7 +135,6 @@ void kvmppc_destroy_vm_hv_nest(struct kvm *kvm);
 static inline int kvmppc_can_deliver_hv_int(struct kvm_vcpu *vcpu, int vec)
 {
 	WARN(1, "KVM: hv_int 0x%x queued but no nested guest support", vec);
-	kvmppc_book3s_dequeue_irqprio(vcpu, vec);
 	return 0;
 }
 
@@ -143,7 +142,6 @@ static inline void kvmppc_inject_hv_interrupt(struct kvm_vcpu *vcpu, int vec,
 					      u64 flags)
 {
 	WARN_ON(1);
-	kvmppc_book3s_dequeue_irqprio(vcpu, vec);
 }
 
 #endif /* CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE */

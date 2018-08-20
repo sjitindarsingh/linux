@@ -141,6 +141,8 @@ static struct kernel_param_ops nested_kvm_ops = {
 
 module_param_cb(nested, &nested_kvm_ops, &nested, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(nested, "Enable/Disable Nested KVM (only on POWER9)");
+#else
+static bool nested = false;
 #endif
 
 /* If set, the threads on each CPU core have to be in the same MMU mode */
@@ -1637,7 +1639,9 @@ static int kvmppc_get_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 		*val = get_reg_val(id, vcpu->arch.pending_exceptions);
 		break;
 	case KVM_REG_PPC_CUR_NEST:
+#ifdef CONFIG_KVM_BOOK3S_HV_NEST_POSSIBLE
 		*val = get_reg_val(id, (unsigned long) vcpu->arch.cur_nest);
+#endif
 		break;
 	case KVM_REG_PPC_TB:
 		*val = get_reg_val(id, ((signed long) mftb()) + ((signed long) *vcpu->arch.vcore->eff_tb_offset));
