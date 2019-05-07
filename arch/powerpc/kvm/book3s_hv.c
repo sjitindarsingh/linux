@@ -5336,8 +5336,12 @@ static int kvmhv_enable_nested(struct kvm *kvm)
 		return -ENODEV;
 
 	/* kvm == NULL means the caller is testing if the capability exists */
-	if (kvm)
+	if (kvm) {
+		/* Only radix guests can act as nested hv and thus run guests */
+		if (!kvm_is_radix(kvm))
+			return -1;
 		kvm->arch.nested_enable = true;
+	}
 	return 0;
 }
 
