@@ -252,9 +252,23 @@ extern void kvmppc_unpin_guest_page(struct kvm *kvm, void *addr,
 extern long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 			long pte_index, unsigned long pteh, unsigned long ptel,
 			pgd_t *pgdir, bool realmode, unsigned long *idx_ret);
+extern long kvmppc_virtmode_do_h_enter(struct kvm *kvm, unsigned long flags,
+				       long pte_index, unsigned long pteh,
+				       unsigned long ptel,
+				       unsigned long *pte_idx_ret);
 extern long kvmppc_do_h_remove(struct kvm *kvm, unsigned long flags,
 			unsigned long pte_index, unsigned long avpn,
-			unsigned long *hpret);
+			bool realmode, unsigned long *hpret);
+extern long kvmppc_do_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
+			     unsigned long pte_index, bool realmode);
+extern long kvmppc_do_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
+				  unsigned long pte_index, bool realmode);
+extern long kvmppc_do_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
+				  unsigned long pte_index, bool realmode);
+extern long kvmppc_do_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
+				unsigned long pte_index, unsigned long avpn,
+				unsigned long va, bool realmode);
+extern long kvmppc_do_h_bulk_remove(struct kvm_vcpu *vcpu, bool realmode);
 extern long kvmppc_hv_get_dirty_log_hpt(struct kvm *kvm,
 			struct kvm_memory_slot *memslot, unsigned long *map);
 extern void kvmppc_harvest_vpa_dirty(struct kvmppc_vpa *vpa,

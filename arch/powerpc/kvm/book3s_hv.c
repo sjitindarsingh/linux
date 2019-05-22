@@ -916,6 +916,66 @@ int kvmppc_pseries_do_hcall(struct kvm_vcpu *vcpu)
 		return RESUME_HOST;
 
 	switch (req) {
+	/*
+	 * The following hpt manipulation hcalls
+	 * (H_REMOVE/H_ENTER/H_READ/H_CLEAR_[MOD/REF]/H_PROTECT/H_BULK_REMOVE)
+	 * are normally handled in real mode in book3s_hv_rmhandlers.S for a
+	 * baremetal (powernv) hypervisor. For a pseries (nested) hypervisor we
+	 * didn't use that entry path, so we have to try handle them here before
+	 * punting them to userspace.
+	 * NOTE: There's not point trying to call the handlers again for
+	 *       !pseries since the only way we got here is if we couldn't
+	 *       handle them.
+	 */
+	case H_REMOVE:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_do_h_remove(vcpu->kvm, kvmppc_get_gpr(vcpu, 4),
+					 kvmppc_get_gpr(vcpu, 5),
+					 kvmppc_get_gpr(vcpu, 6), false,
+					 &vcpu->arch.regs.gpr[4]);
+		break;
+	case H_ENTER:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_virtmode_do_h_enter(vcpu->kvm,
+						 kvmppc_get_gpr(vcpu, 4),
+						 kvmppc_get_gpr(vcpu, 5),
+						 kvmppc_get_gpr(vcpu, 6),
+						 kvmppc_get_gpr(vcpu, 7),
+						 &vcpu->arch.regs.gpr[4]);
+		break;
+	case H_READ:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_do_h_read(vcpu, kvmppc_get_gpr(vcpu, 4),
+				       kvmppc_get_gpr(vcpu, 5), false);
+		break;
+	case H_CLEAR_MOD:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_do_h_clear_mod(vcpu, kvmppc_get_gpr(vcpu, 4),
+					    kvmppc_get_gpr(vcpu, 5), false);
+		break;
+	case H_CLEAR_REF:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_do_h_clear_ref(vcpu, kvmppc_get_gpr(vcpu, 4),
+					    kvmppc_get_gpr(vcpu, 5), false);
+		break;
+	case H_PROTECT:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_do_h_protect(vcpu, kvmppc_get_gpr(vcpu, 4),
+					  kvmppc_get_gpr(vcpu, 5),
+					  kvmppc_get_gpr(vcpu, 6),
+					  0UL, false);
+		break;
+	case H_BULK_REMOVE:
+		if (!kvmhv_on_pseries())
+			return RESUME_HOST;
+		ret = kvmppc_do_h_bulk_remove(vcpu, false);
+		break;
 	case H_CEDE:
 		break;
 	case H_PROD:

@@ -137,7 +137,7 @@ static void kvmppc_set_dirty_from_hpte(struct kvm *kvm,
 static unsigned long *revmap_for_hpte(struct kvm *kvm, unsigned long hpte_v,
 				      unsigned long hpte_gr,
 				      struct kvm_memory_slot **memslotp,
-				      unsigned long *gfnp)
+				      unsigned long *gfnp, bool realmode)
 {
 	struct kvm_memory_slot *memslot;
 	unsigned long *rmap;
@@ -152,14 +152,17 @@ static unsigned long *revmap_for_hpte(struct kvm *kvm, unsigned long hpte_v,
 	if (!memslot)
 		return NULL;
 
-	rmap = real_vmalloc_addr(&memslot->arch.rmap[gfn - memslot->base_gfn]);
+	rmap = &memslot->arch.rmap[gfn - memslot->base_gfn];
+	if (realmode)
+		rmap = real_vmalloc_addr(rmap);
 	return rmap;
 }
 
 /* Remove this HPTE from the chain for a real page */
 static void remove_revmap_chain(struct kvm *kvm, long pte_index,
 				struct revmap_entry *rev,
-				unsigned long hpte_v, unsigned long hpte_r)
+				unsigned long hpte_v, unsigned long hpte_r,
+				bool realmode)
 {
 	struct revmap_entry *next, *prev;
 	unsigned long ptel, head;
@@ -170,14 +173,18 @@ static void remove_revmap_chain(struct kvm *kvm, long pte_index,
 
 	rcbits = hpte_r & (HPTE_R_R | HPTE_R_C);
 	ptel = rev->guest_rpte |= rcbits;
-	rmap = revmap_for_hpte(kvm, hpte_v, ptel, &memslot, &gfn);
+	rmap = revmap_for_hpte(kvm, hpte_v, ptel, &memslot, &gfn, realmode);
 	if (!rmap)
 		return;
 	lock_rmap(rmap);
 
 	head = *rmap & KVMPPC_RMAP_INDEX;
-	next = real_vmalloc_addr(&kvm->arch.hpt.rev[rev->forw]);
-	prev = real_vmalloc_addr(&kvm->arch.hpt.rev[rev->back]);
+	next = &kvm->arch.hpt.rev[rev->forw];
+	if (realmode)
+		next = real_vmalloc_addr(next);
+	prev = &kvm->arch.hpt.rev[rev->back];
+	if (realmode)
+		prev = real_vmalloc_addr(prev);
 	next->back = rev->back;
 	prev->forw = rev->forw;
 	if (head == pte_index) {
@@ -475,7 +482,7 @@ static void do_tlbies(struct kvm *kvm, unsigned long *rbvalues,
 
 long kvmppc_do_h_remove(struct kvm *kvm, unsigned long flags,
 			unsigned long pte_index, unsigned long avpn,
-			unsigned long *hpret)
+			bool realmode, unsigned long *hpret)
 {
 	__be64 *hpte;
 	unsigned long v, r, rb;
@@ -502,7 +509,9 @@ long kvmppc_do_h_remove(struct kvm *kvm, unsigned long flags,
 		return H_NOT_FOUND;
 	}
 
-	rev = real_vmalloc_addr(&kvm->arch.hpt.rev[pte_index]);
+	rev = &kvm->arch.hpt.rev[pte_index];
+	if (realmode)
+		rev = real_vmalloc_addr(rev);
 	v = pte & ~HPTE_V_HVLOCK;
 	if (v & HPTE_V_VALID) {
 		hpte[0] &= ~cpu_to_be64(HPTE_V_VALID);
@@ -518,7 +527,7 @@ long kvmppc_do_h_remove(struct kvm *kvm, unsigned long flags,
 		 * obtain reliable values of R and C.
 		 */
 		remove_revmap_chain(kvm, pte_index, rev, v,
-				    be64_to_cpu(hpte[1]));
+				    be64_to_cpu(hpte[1]), realmode);
 	}
 	r = rev->guest_rpte & ~HPTE_GR_RESERVED;
 	note_hpte_modification(kvm, rev);
@@ -538,11 +547,11 @@ EXPORT_SYMBOL_GPL(kvmppc_do_h_remove);
 long kvmppc_h_remove(struct kvm_vcpu *vcpu, unsigned long flags,
 		     unsigned long pte_index, unsigned long avpn)
 {
-	return kvmppc_do_h_remove(vcpu->kvm, flags, pte_index, avpn,
+	return kvmppc_do_h_remove(vcpu->kvm, flags, pte_index, avpn, true,
 				  &vcpu->arch.regs.gpr[4]);
 }
 
-long kvmppc_h_bulk_remove(struct kvm_vcpu *vcpu)
+long kvmppc_do_h_bulk_remove(struct kvm_vcpu *vcpu, bool realmode)
 {
 	struct kvm *kvm = vcpu->kvm;
 	unsigned long *args = &vcpu->arch.regs.gpr[4];
@@ -615,7 +624,9 @@ long kvmppc_h_bulk_remove(struct kvm_vcpu *vcpu)
 			}
 
 			args[j] = ((0x80 | flags) << 56) + pte_index;
-			rev = real_vmalloc_addr(&kvm->arch.hpt.rev[pte_index]);
+			rev = &kvm->arch.hpt.rev[pte_index];
+			if (realmode)
+				rev = real_vmalloc_addr(rev);
 			note_hpte_modification(kvm, rev);
 
 			if (!(hp0 & HPTE_V_VALID)) {
@@ -650,7 +661,7 @@ long kvmppc_h_bulk_remove(struct kvm_vcpu *vcpu)
 			hp = hptes[k];
 			rev = revs[k];
 			remove_revmap_chain(kvm, pte_index, rev,
-				be64_to_cpu(hp[0]), be64_to_cpu(hp[1]));
+				be64_to_cpu(hp[0]), be64_to_cpu(hp[1]), true);
 			rcbits = rev->guest_rpte & (HPTE_R_R|HPTE_R_C);
 			args[j] |= rcbits << (56 - 5);
 			__unlock_hpte(hp, 0);
@@ -659,10 +670,16 @@ long kvmppc_h_bulk_remove(struct kvm_vcpu *vcpu)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(kvmppc_do_h_bulk_remove);
 
-long kvmppc_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
-		      unsigned long pte_index, unsigned long avpn,
-		      unsigned long va)
+long kvmppc_h_bulk_remove(struct kvm_vcpu *vcpu)
+{
+	return kvmppc_do_h_bulk_remove(vcpu, true);
+}
+
+long kvmppc_do_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
+			 unsigned long pte_index, unsigned long avpn,
+			 unsigned long va, bool realmode)
 {
 	struct kvm *kvm = vcpu->kvm;
 	__be64 *hpte;
@@ -695,7 +712,9 @@ long kvmppc_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
 	/* Update guest view of 2nd HPTE dword */
 	mask = HPTE_R_PP0 | HPTE_R_PP | HPTE_R_N |
 		HPTE_R_KEY_HI | HPTE_R_KEY_LO;
-	rev = real_vmalloc_addr(&kvm->arch.hpt.rev[pte_index]);
+	rev = &kvm->arch.hpt.rev[pte_index];
+	if (realmode)
+		rev = real_vmalloc_addr(rev);
 	if (rev) {
 		r = (rev->guest_rpte & ~mask) | bits;
 		rev->guest_rpte = r;
@@ -730,9 +749,17 @@ long kvmppc_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
 
 	return H_SUCCESS;
 }
+EXPORT_SYMBOL_GPL(kvmppc_do_h_protect);
 
-long kvmppc_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
-		   unsigned long pte_index)
+long kvmppc_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
+		      unsigned long pte_index, unsigned long avpn,
+		      unsigned long va)
+{
+	return kvmppc_do_h_protect(vcpu, flags, pte_index, avpn, va, true);
+}
+
+long kvmppc_do_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
+		      unsigned long pte_index, bool realmode)
 {
 	struct kvm *kvm = vcpu->kvm;
 	__be64 *hpte;
@@ -748,7 +775,9 @@ long kvmppc_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
 		pte_index &= ~3;
 		n = 4;
 	}
-	rev = real_vmalloc_addr(&kvm->arch.hpt.rev[pte_index]);
+	rev = &kvm->arch.hpt.rev[pte_index];
+	if (realmode)
+		rev = real_vmalloc_addr(rev);
 	for (i = 0; i < n; ++i, ++pte_index) {
 		hpte = (__be64 *)(kvm->arch.hpt.virt + (pte_index << 4));
 		v = be64_to_cpu(hpte[0]) & ~HPTE_V_HVLOCK;
@@ -770,9 +799,16 @@ long kvmppc_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
 	}
 	return H_SUCCESS;
 }
+EXPORT_SYMBOL_GPL(kvmppc_do_h_read);
 
-long kvmppc_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
-			unsigned long pte_index)
+long kvmppc_h_read(struct kvm_vcpu *vcpu, unsigned long flags,
+		   unsigned long pte_index)
+{
+	return kvmppc_do_h_read(vcpu, flags, pte_index, true);
+}
+
+long kvmppc_do_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
+			   unsigned long pte_index, bool realmode)
 {
 	struct kvm *kvm = vcpu->kvm;
 	__be64 *hpte;
@@ -786,7 +822,9 @@ long kvmppc_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
 	if (pte_index >= kvmppc_hpt_npte(&kvm->arch.hpt))
 		return H_PARAMETER;
 
-	rev = real_vmalloc_addr(&kvm->arch.hpt.rev[pte_index]);
+	rev = &kvm->arch.hpt.rev[pte_index];
+	if (realmode)
+		rev = real_vmalloc_addr(rev);
 	hpte = (__be64 *)(kvm->arch.hpt.virt + (pte_index << 4));
 	while (!try_lock_hpte(hpte, HPTE_V_HVLOCK))
 		cpu_relax();
@@ -804,7 +842,8 @@ long kvmppc_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
 		gr |= r & (HPTE_R_R | HPTE_R_C);
 		if (r & HPTE_R_R) {
 			kvmppc_clear_ref_hpte(kvm, hpte, pte_index);
-			rmap = revmap_for_hpte(kvm, v, gr, NULL, NULL);
+			rmap = revmap_for_hpte(kvm, v, gr, NULL, NULL,
+					       realmode);
 			if (rmap) {
 				lock_rmap(rmap);
 				*rmap |= KVMPPC_RMAP_REFERENCED;
@@ -818,9 +857,16 @@ long kvmppc_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
 	unlock_hpte(hpte, v & ~HPTE_V_HVLOCK);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(kvmppc_do_h_clear_ref);
 
-long kvmppc_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
+long kvmppc_h_clear_ref(struct kvm_vcpu *vcpu, unsigned long flags,
 			unsigned long pte_index)
+{
+	return kvmppc_do_h_clear_ref(vcpu, flags, pte_index, true);
+}
+
+long kvmppc_do_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
+			   unsigned long pte_index, bool realmode)
 {
 	struct kvm *kvm = vcpu->kvm;
 	__be64 *hpte;
@@ -833,7 +879,9 @@ long kvmppc_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
 	if (pte_index >= kvmppc_hpt_npte(&kvm->arch.hpt))
 		return H_PARAMETER;
 
-	rev = real_vmalloc_addr(&kvm->arch.hpt.rev[pte_index]);
+	rev = &kvm->arch.hpt.rev[pte_index];
+	if (realmode)
+		rev = real_vmalloc_addr(rev);
 	hpte = (__be64 *)(kvm->arch.hpt.virt + (pte_index << 4));
 	while (!try_lock_hpte(hpte, HPTE_V_HVLOCK))
 		cpu_relax();
@@ -864,6 +912,13 @@ long kvmppc_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
  out:
 	unlock_hpte(hpte, v & ~HPTE_V_HVLOCK);
 	return ret;
+}
+EXPORT_SYMBOL_GPL(kvmppc_do_h_clear_mod);
+
+long kvmppc_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
+			unsigned long pte_index)
+{
+	return kvmppc_do_h_clear_mod(vcpu, flags, pte_index, true);
 }
 
 static int kvmppc_get_hpa(struct kvm_vcpu *vcpu, unsigned long gpa,
