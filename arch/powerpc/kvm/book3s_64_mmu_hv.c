@@ -42,10 +42,6 @@
 	do { } while (0)
 #endif
 
-static long kvmppc_virtmode_do_h_enter(struct kvm *kvm, unsigned long flags,
-				long pte_index, unsigned long pteh,
-				unsigned long ptel, unsigned long *pte_idx_ret);
-
 struct kvm_resize_hpt {
 	/* These fields read-only after init */
 	struct kvm *kvm;
@@ -287,7 +283,7 @@ static void kvmppc_mmu_book3s_64_hv_reset_msr(struct kvm_vcpu *vcpu)
 	kvmppc_set_msr(vcpu, msr);
 }
 
-static long kvmppc_virtmode_do_h_enter(struct kvm *kvm, unsigned long flags,
+long kvmppc_virtmode_do_h_enter(struct kvm *kvm, unsigned long flags,
 				long pte_index, unsigned long pteh,
 				unsigned long ptel, unsigned long *pte_idx_ret)
 {
@@ -1907,7 +1903,7 @@ static ssize_t kvm_htab_write(struct file *file, const char __user *buf,
 			nb += HPTE_SIZE;
 
 			if (be64_to_cpu(hptp[0]) & (HPTE_V_VALID | HPTE_V_ABSENT))
-				kvmppc_do_h_remove(kvm, 0, i, 0, tmp);
+				kvmppc_do_h_remove(kvm, 0, i, 0, false, tmp);
 			err = -EIO;
 			ret = kvmppc_virtmode_do_h_enter(kvm, H_EXACT, i, v, r,
 							 tmp);
@@ -1937,7 +1933,7 @@ static ssize_t kvm_htab_write(struct file *file, const char __user *buf,
 
 		for (j = 0; j < hdr.n_invalid; ++j) {
 			if (be64_to_cpu(hptp[0]) & (HPTE_V_VALID | HPTE_V_ABSENT))
-				kvmppc_do_h_remove(kvm, 0, i, 0, tmp);
+				kvmppc_do_h_remove(kvm, 0, i, 0, false, tmp);
 			++i;
 			hptp += 2;
 		}
