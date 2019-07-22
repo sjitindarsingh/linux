@@ -446,6 +446,25 @@ static void do_tlbies(unsigned int lpid, unsigned long *rbvalues,
 	long i;
 
 	/*
+	 * Handle the case where we're running as a nested hypervisor and so
+	 * have to make an hcall to handle invalidations for us.
+	 */
+	if (kvmhv_on_pseries()) {
+		unsigned long rc, ric = 0, prs = 0, r = 0;
+
+		for (i = 0; i < npages; i++) {
+			rc = plpar_hcall_norets(H_TLB_INVALIDATE,
+						H_TLBIE_P1_ENC(ric, prs, r),
+						lpid, rbvalues[i]);
+			if (rc)
+				pr_err("KVM: HPT TLB page invalidation hcall failed"
+					", rc=%ld\n", rc);
+		}
+
+		return;
+	}
+
+	/*
 	 * We use the POWER9 5-operand versions of tlbie and tlbiel here.
 	 * Since we are using RIC=0 PRS=0 R=0, and P7/P8 tlbiel ignores
 	 * the RS field, this is backwards-compatible with P7 and P8.
@@ -1355,3 +1374,4 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 
 	return -1;		/* send fault up to host kernel mode */
 }
+EXPORT_SYMBOL_GPL(kvmppc_hpte_hv_fault);
