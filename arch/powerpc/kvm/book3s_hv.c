@@ -3434,16 +3434,28 @@ static int kvmhv_pseries_enter_guest(struct kvm_vcpu *vcpu, u64 time_limit,
 {
 	/* call our hypervisor to load up HV regs and go */
 	struct hv_guest_state hvregs;
+	struct guest_slb *slbp = NULL;
 	/* we need to save/restore host & guest psscr since L0 doesn't for us */
 	unsigned long host_psscr;
 	int trap;
+
+	if (!kvmhv_vcpu_is_radix(vcpu)) {
+		slbp = kzalloc(sizeof(*slbp), GFP_KERNEL);
+		if (!slbp) {
+			pr_err_ratelimited("KVM: Couldn't alloc hv_guest_slb\n");
+			return 0;
+		}
+		kvmhv_save_guest_slb(vcpu, slbp);
+		hvregs.version = 2;	/* V2 required for hpt guest support */
+	} else {
+		hvregs.version = 1;	/* V1 sufficient for radix guest */
+	}
 
 	host_psscr = mfspr(SPRN_PSSCR_PR);
 	mtspr(SPRN_PSSCR_PR, vcpu->arch.psscr);
 	kvmhv_save_hv_regs(vcpu, &hvregs);
 	hvregs.lpcr = lpcr;
 	vcpu->arch.regs.msr = vcpu->arch.shregs.msr;
-	hvregs.version = HV_GUEST_STATE_VERSION;
 	if (vcpu->arch.nested) {
 		hvregs.lpid = vcpu->arch.nested->shadow_lpid;
 		hvregs.vcpu_token = vcpu->arch.nested_vcpu_id;
@@ -3453,8 +3465,12 @@ static int kvmhv_pseries_enter_guest(struct kvm_vcpu *vcpu, u64 time_limit,
 	}
 	hvregs.hdec_expiry = time_limit;
 	trap = plpar_hcall_norets(H_ENTER_NESTED, __pa(&hvregs),
-				  __pa(&vcpu->arch.regs));
+				  __pa(&vcpu->arch.regs), __pa(slbp));
 	kvmhv_restore_hv_return_state(vcpu, &hvregs);
+	if (!kvmhv_vcpu_is_radix(vcpu)) {
+		kvmhv_restore_guest_slb(vcpu, slbp);
+		kfree(slbp);
+	}
 	vcpu->arch.shregs.msr = vcpu->arch.regs.msr;
 	vcpu->arch.shregs.dar = mfspr(SPRN_DAR);
 	vcpu->arch.shregs.dsisr = mfspr(SPRN_DSISR);
@@ -3466,6 +3482,49 @@ static int kvmhv_pseries_enter_guest(struct kvm_vcpu *vcpu, u64 time_limit,
 	    kvmppc_get_gpr(vcpu, 3) == H_CEDE) {
 		kvmppc_nested_cede(vcpu);
 		trap = 0;
+	} else if ((!kvmhv_vcpu_is_radix(vcpu)) &&
+				(trap == BOOK3S_INTERRUPT_H_DATA_STORAGE ||
+				 trap == BOOK3S_INTERRUPT_H_INST_STORAGE)) {
+		bool data = (trap == BOOK3S_INTERRUPT_H_DATA_STORAGE);
+		unsigned long addr, slb_v;
+		unsigned int dsisr;
+		long ret;
+
+		/* NOTE: fault_gpa was reused to store faulting slb entry. */
+		slb_v = vcpu->arch.fault_gpa;
+		if (data) {
+			addr = vcpu->arch.fault_dar;
+			dsisr = vcpu->arch.fault_dsisr;
+		} else {
+			addr = kvmppc_get_pc(vcpu);
+			dsisr = vcpu->arch.shregs.msr & DSISR_SRR1_MATCH_64S;
+			if (vcpu->arch.shregs.msr & HSRR1_HISI_WRITE)
+				dsisr |= DSISR_ISSTORE;
+		}
+
+		/*
+		* kvmppc_hpte_hv_fault is normally called on the exit path in
+		* book3s_hv_rmhandlers.S, however here (for a pseries
+		* hypervisor) we used the H_ENTER_NESTED hcall and so missed
+		* calling it. Thus call is here, now.
+		*/
+		ret = kvmppc_hpte_hv_fault(vcpu, addr, slb_v, dsisr, data, 0);
+		if (!ret) { /* let the guest try again */
+			trap = 0;
+		} else if ((!vcpu->arch.nested) && (ret > 0)) {
+			/*
+			 * Synthesize a DSI or ISI for the guest
+			 * NOTE: don't need to worry about this being a segment
+			 * fault since if that was the case the L0 hypervisor
+			 * would have delivered this to the nested guest
+			 * directly already.
+			 */
+			if (data)
+				kvmppc_core_queue_data_storage(vcpu, addr, ret);
+			else
+				kvmppc_core_queue_inst_storage(vcpu, ret);
+			trap = 0;
+		}
 	}
 
 	return trap;
@@ -3682,7 +3741,8 @@ int kvmhv_p9_guest_entry(struct kvm_vcpu *vcpu, u64 time_limit,
 		trap = kvmhv_load_hv_regs_and_go(vcpu, time_limit, lpcr);
 	}
 
-	vcpu->arch.slb_max = 0;
+	if (kvm_is_radix(vcpu->kvm))
+		vcpu->arch.slb_max = 0;
 	dec = mfspr(SPRN_DEC);
 	if (!(lpcr & LPCR_LD)) /* Sign extend if not using large decrementer */
 		dec = (s32) dec;
@@ -4346,9 +4406,12 @@ static int kvmppc_vcpu_run_hv(struct kvm_run *run, struct kvm_vcpu *vcpu)
 		 * for radix guests using the guest PIDR value and LPID 0.
 		 * The workaround is in the old path (kvmppc_run_vcpu())
 		 * but not the new path (kvmhv_run_single_vcpu()).
+		 * N.B. We need to use the kvmhv_run_single_vcpu() path on
+		 *      pseries to ensure we call H_ENTER_NESTED.
 		 */
-		if (kvm->arch.threads_indep && kvm_is_radix(kvm) &&
-		    !no_mixing_hpt_and_radix)
+		if (kvmhv_on_pseries() || (kvm->arch.threads_indep &&
+					   kvm_is_radix(kvm) &&
+					   !no_mixing_hpt_and_radix))
 			r = kvmhv_run_single_vcpu(run, vcpu, ~(u64)0,
 						  vcpu->arch.vcore->lpcr);
 		else
@@ -4396,9 +4459,10 @@ static void kvmppc_add_seg_page_size(struct kvm_ppc_one_seg_page_size **sps,
 	(*sps)->enc[0].page_shift = shift;
 	(*sps)->enc[0].pte_enc = kvmppc_pgsize_lp_encoding(shift, shift);
 	/*
-	 * Add 16MB MPSS support (may get filtered out by userspace)
+	 * Add 16MB MPSS support (may get filtered out by userspace) if we're
+	 * not running as a nested hypervisor (pseries)
 	 */
-	if (shift != 24) {
+	if (shift != 24 && !kvmhv_on_pseries()) {
 		int penc = kvmppc_pgsize_lp_encoding(shift, 24);
 		if (penc != -1) {
 			(*sps)->enc[1].page_shift = 24;
@@ -4429,11 +4493,9 @@ static int kvm_vm_ioctl_get_smmu_info_hv(struct kvm *kvm,
 	sps = &info->sps[0];
 	kvmppc_add_seg_page_size(&sps, 12, 0);
 	kvmppc_add_seg_page_size(&sps, 16, SLB_VSID_L | SLB_VSID_LP_01);
-	kvmppc_add_seg_page_size(&sps, 24, SLB_VSID_L);
-
-	/* If running as a nested hypervisor, we don't support HPT guests */
-	if (kvmhv_on_pseries())
-		info->flags |= KVM_PPC_NO_HASH;
+	if (!kvmhv_on_pseries()) {
+		kvmppc_add_seg_page_size(&sps, 24, SLB_VSID_L);
+	} /* else no 16M page size support */
 
 	return 0;
 }
@@ -5360,10 +5422,6 @@ static int kvmhv_configure_mmu(struct kvm *kvm, struct kvm_ppc_mmuv3_cfg *cfg)
 
 	/* We can change a guest to/from radix now, if the host is radix */
 	if (radix && !radix_enabled())
-		return -EINVAL;
-
-	/* If we're a nested hypervisor, we currently only support radix */
-	if (kvmhv_on_pseries() && !radix)
 		return -EINVAL;
 
 	mutex_lock(&kvm->arch.mmu_setup_lock);

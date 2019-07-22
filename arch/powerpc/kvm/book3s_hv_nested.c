@@ -51,6 +51,16 @@ void kvmhv_save_hv_regs(struct kvm_vcpu *vcpu, struct hv_guest_state *hr)
 	hr->ppr = vcpu->arch.ppr;
 }
 
+void kvmhv_save_guest_slb(struct kvm_vcpu *vcpu, struct guest_slb *slbp)
+{
+	int i;
+
+	for (i = 0; i < 64; i++)
+		slbp->slb[i] = vcpu->arch.slb[i];
+	slbp->slb_max = vcpu->arch.slb_max;
+	slbp->slb_nr = vcpu->arch.slb_nr;
+}
+
 static void byteswap_pt_regs(struct pt_regs *regs)
 {
 	unsigned long *addr = (unsigned long *) regs;
@@ -169,6 +179,16 @@ static void restore_hv_regs(struct kvm_vcpu *vcpu, struct hv_guest_state *hr)
 	vcpu->arch.ppr = hr->ppr;
 }
 
+void kvmhv_restore_guest_slb(struct kvm_vcpu *vcpu, struct guest_slb *slbp)
+{
+	int i;
+
+	for (i = 0; i < 64; i++)
+		vcpu->arch.slb[i] = slbp->slb[i];
+	vcpu->arch.slb_max = slbp->slb_max;
+	vcpu->arch.slb_nr = slbp->slb_nr;
+}
+
 void kvmhv_restore_hv_return_state(struct kvm_vcpu *vcpu,
 				   struct hv_guest_state *hr)
 {
@@ -239,7 +259,7 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 		return H_PARAMETER;
 	if (kvmppc_need_byteswap(vcpu))
 		byteswap_hv_regs(&l2_hv);
-	if (l2_hv.version != HV_GUEST_STATE_VERSION)
+	if (l2_hv.version != 1)
 		return H_P2;
 
 	regs_ptr = kvmppc_get_gpr(vcpu, 5);

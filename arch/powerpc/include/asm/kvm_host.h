@@ -813,6 +813,61 @@ struct kvm_vcpu_arch {
 #endif /* CONFIG_KVM_BOOK3S_HV_EXIT_TIMING */
 };
 
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+
+/* Following definitions used for the H_ENTER_NESTED hcall parameters */
+
+/* Following structure(s) added in Version 1 */
+
+/* Register state for entering a nested guest with H_ENTER_NESTED */
+struct hv_guest_state {
+	/* version 1 */
+	u64 version;		/* version of this structure layout */
+	u32 lpid;
+	u32 vcpu_token;
+	/* These registers are hypervisor privileged (at least for writing) */
+	u64 lpcr;
+	u64 pcr;
+	u64 amor;
+	u64 dpdes;
+	u64 hfscr;
+	s64 tb_offset;
+	u64 dawr0;
+	u64 dawrx0;
+	u64 ciabr;
+	u64 hdec_expiry;
+	u64 purr;
+	u64 spurr;
+	u64 ic;
+	u64 vtb;
+	u64 hdar;
+	u64 hdsisr;
+	u64 heir;
+	u64 asdr;
+	/* These are OS privileged but need to be set late in guest entry */
+	u64 srr0;
+	u64 srr1;
+	u64 sprg[4];
+	u64 pidr;
+	u64 cfar;
+	u64 ppr;
+};
+
+/* Following structure(s) added in Version 2 */
+
+/* SLB state for entering a nested guest with H_ENTER_NESTED */
+struct guest_slb {
+	struct kvmppc_slb slb[64];
+	int slb_max;		/* 1 + index of last valid entry in slb[] */
+	int slb_nr;		/* total number of entries in SLB */
+};
+
+/* Min and max supported versions of the above structure(s) */
+#define HV_GUEST_STATE_MIN_VERSION	1
+#define HV_GUEST_STATE_MAX_VERSION	2
+
+#endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
+
 #define VCPU_FPR(vcpu, i)	(vcpu)->arch.fp.fpr[i][TS_FPROFFSET]
 #define VCPU_VSX_FPR(vcpu, i, j)	((vcpu)->arch.fp.fpr[i][j])
 #define VCPU_VSX_VR(vcpu, i)		((vcpu)->arch.vr.vr[i])
