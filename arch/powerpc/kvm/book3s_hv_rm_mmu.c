@@ -1182,9 +1182,12 @@ EXPORT_SYMBOL(kvmppc_hv_find_lock_hpte);
  * -1 to pass the fault up to host kernel mode code, -2 to do that
  * and also load the instruction word (for MMIO emulation),
  * or 0 if we should make the guest retry the access.
+ * For a nested hypervisor, this will be called in virtual mode
+ * (is_realmode == false) and should be called with preemption disabled.
  */
 long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
-			  unsigned long slb_v, unsigned int status, bool data)
+			  unsigned long slb_v, unsigned int status,
+			  bool data, bool is_realmode)
 {
 	struct kvm *kvm = vcpu->kvm;
 	long int index;
@@ -1222,7 +1225,9 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 			v = hpte_new_to_old_v(v, r);
 			r = hpte_new_to_old_r(r);
 		}
-		rev = real_vmalloc_addr(&kvm->arch.hpt.rev[index]);
+		rev = &kvm->arch.hpt.rev[index];
+		if (is_realmode)
+			rev = real_vmalloc_addr(rev);
 		gr = rev->guest_rpte;
 
 		unlock_hpte(hpte, orig_v);

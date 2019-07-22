@@ -2066,6 +2066,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	/* Search the hash table. */
 	mr	r3, r9			/* vcpu pointer */
 	li	r7, 1			/* data fault */
+	li	r8, 1			/* is real mode */
 	bl	kvmppc_hpte_hv_fault
 	ld	r9, HSTATE_KVM_VCPU(r13)
 	ld	r10, VCPU_PC(r9)
@@ -2158,6 +2159,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	mr	r4, r10
 	mr	r6, r11
 	li	r7, 0			/* instruction fault */
+	li	r8, 1			/* is real mode */
 	bl	kvmppc_hpte_hv_fault
 	ld	r9, HSTATE_KVM_VCPU(r13)
 	ld	r10, VCPU_PC(r9)
