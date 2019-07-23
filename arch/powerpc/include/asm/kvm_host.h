@@ -793,10 +793,12 @@ struct kvm_vcpu_arch {
 
 	u32 online;
 
+	unsigned long lpcr;
 	/* For support of nested guests */
 	struct kvm_nested_guest *nested;
 	u32 nested_vcpu_id;
 	gpa_t nested_io_gpr;
+	u64 hdec_exp;
 #endif
 
 #ifdef CONFIG_KVM_BOOK3S_HV_EXIT_TIMING
