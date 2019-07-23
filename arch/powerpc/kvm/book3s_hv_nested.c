@@ -267,7 +267,6 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 	struct guest_slb *l2_slb = NULL, *saved_l1_slb = NULL;
 	struct kvmppc_vcore *vc = vcpu->arch.vcore;
 	u64 hv_ptr, regs_ptr, slb_ptr = 0UL;
-	u64 hdec_exp;
 	s64 delta_purr, delta_spurr, delta_ic, delta_vtb;
 	u64 mask;
 	unsigned long lpcr;
@@ -356,7 +355,7 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 	}
 
 	/* convert TB values/offsets to host (L0) values */
-	hdec_exp = l2_hv.hdec_expiry - vc->tb_offset;
+	vcpu->arch.hdec_exp = l2_hv.hdec_expiry - vc->tb_offset;
 	vc->tb_offset += l2_hv.tb_offset;
 
 	/* set L1 state to L2 state */
@@ -376,14 +375,15 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 	vcpu->arch.ret = RESUME_GUEST;
 	vcpu->arch.trap = 0;
 	do {
-		if (mftb() >= hdec_exp) {
+		if (mftb() >= vcpu->arch.hdec_exp) {
 			vcpu->arch.trap = BOOK3S_INTERRUPT_HV_DECREMENTER;
 			r = RESUME_HOST;
 			break;
 		}
+		/* update vcpu->arch.lpcr in case a previous loop modified it */
+		vcpu->arch.lpcr = lpcr;
 		if (radix)
-			r = kvmhv_run_single_vcpu(vcpu->arch.kvm_run, vcpu,
-						  hdec_exp, lpcr);
+			r = kvmhv_run_single_vcpu(vcpu->arch.kvm_run, vcpu);
 		else
 			r = RESUME_HOST; /* XXX TODO hpt entry path */
 	} while (is_kvmppc_resume_guest(r));
