@@ -62,6 +62,7 @@ struct patb_entry {
 extern struct patb_entry *partition_tb;
 
 /* Bits in patb0 field */
+/* Radix */
 #define PATB_HR		(1UL << 63)
 #define RPDB_MASK	0x0fffffffffffff00UL
 #define RPDB_SHIFT	(1UL << 8)
@@ -70,6 +71,14 @@ extern struct patb_entry *partition_tb;
 #define RTS2_SHIFT	5		/* bottom 3 bits of radix tree size */
 #define RTS2_MASK	(7UL << RTS2_SHIFT)
 #define RPDS_MASK	0x1f		/* root page dir. size field */
+/* Hash */
+#define PATB_HTABORG	0x0ffffffffffc0000UL	/* hpt base */
+#define PATB_PS		0xe0			/* page size */
+#define PATB_PS_L	0x80
+#define PATB_PS_L_SHIFT	7
+#define PATB_PS_LP	0x60
+#define PATB_PS_LP_SHIFT	5
+#define PATB_HTABSIZE	0x1f			/* hpt size */
 
 /* Bits in patb1 field */
 #define PATB_GR		(1UL << 63)	/* guest uses radix; must match HR */

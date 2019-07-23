@@ -35,7 +35,9 @@ struct kvm_nested_guest {
 	struct kvm *l1_host;		/* L1 VM that owns this nested guest */
 	int l1_lpid;			/* lpid L1 guest thinks this guest is */
 	int shadow_lpid;		/* real lpid of this nested guest */
-	pgd_t *shadow_pgtable;		/* our page table for this guest */
+	pgd_t *shadow_pgtable;		/* page table for this guest if radix */
+	struct kvm_hpt_info shadow_hpt;	/* hpt for this guest if hash */
+	u64 vrma_slb_v;			/* vrma slb for this guest if hash */
 	u64 l1_gr_to_hr;		/* L1's addr of part'n-scoped table */
 	u64 process_table;		/* process table entry for this guest */
 	long refcnt;			/* number of pointers to this struct */

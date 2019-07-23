@@ -23,6 +23,7 @@
 static struct patb_entry *pseries_partition_tb;
 
 static void kvmhv_update_ptbl_cache(struct kvm_nested_guest *gp);
+static void kvmhv_remove_all_nested_rmap_lpid(struct kvm *kvm, int lpid);
 static void kvmhv_free_memslot_nest_rmap(struct kvm_memory_slot *free);
 
 void kvmhv_save_hv_regs(struct kvm_vcpu *vcpu, struct hv_guest_state *hr)
@@ -247,6 +248,7 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 	s64 delta_purr, delta_spurr, delta_ic, delta_vtb;
 	u64 mask;
 	unsigned long lpcr;
+	u8 radix;
 
 	if (vcpu->kvm->arch.l1_ptcr == 0)
 		return H_NOT_AVAILABLE;
@@ -282,6 +284,26 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 		mutex_unlock(&l2->tlb_lock);
 	}
 
+	mutex_lock(&l2->tlb_lock);
+	radix = l2->radix;
+	mutex_unlock(&l2->tlb_lock);
+	/* some lpcr sanity checking */
+	if (radix) {
+		/* radix requires gtse and uprt */
+		if ((~l2_hv.lpcr & LPCR_HR) || (~l2_hv.lpcr & LPCR_GTSE) ||
+					       (~l2_hv.lpcr & LPCR_UPRT) ||
+					       (l2_hv.lpcr & LPCR_VPM1))
+			return H_PARAMETER;
+	} else {
+		/* XXX TODO hpt entry */
+		return H_PARAMETER;
+		/* hpt doesn't support gtse or uprt and required vpm */
+		if ((l2_hv.lpcr & LPCR_HR) || (l2_hv.lpcr & LPCR_GTSE) ||
+					      (l2_hv.lpcr & LPCR_UPRT) ||
+					      (~l2_hv.lpcr & LPCR_VPM1))
+			return H_PARAMETER;
+	}
+
 	/* save l1 values of things */
 	vcpu->arch.regs.msr = vcpu->arch.shregs.msr;
 	saved_l1_regs = vcpu->arch.regs;
@@ -297,7 +319,8 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 	vcpu->arch.regs = l2_regs;
 	vcpu->arch.shregs.msr = vcpu->arch.regs.msr;
 	mask = LPCR_DPFD | LPCR_ILE | LPCR_TC | LPCR_AIL | LPCR_LD |
-		LPCR_LPES | LPCR_MER;
+		LPCR_LPES | LPCR_MER | LPCR_HR | LPCR_GTSE | LPCR_UPRT |
+		LPCR_VPM1;
 	lpcr = (vc->lpcr & ~mask) | (l2_hv.lpcr & mask);
 	sanitise_hv_regs(vcpu, &l2_hv);
 	restore_hv_regs(vcpu, &l2_hv);
@@ -413,16 +436,26 @@ void kvmhv_nested_exit(void)
 	}
 }
 
-static void kvmhv_flush_lpid(unsigned int lpid)
+/*
+ * Flushes the partition scoped translations of a given lpid.
+ */
+static void kvmhv_flush_lpid(unsigned int lpid, bool radix)
 {
 	long rc;
 
 	if (!kvmhv_on_pseries()) {
-		radix__flush_tlb_lpid(lpid);
+		if (radix) {
+			radix__flush_tlb_lpid(lpid);
+		} else {
+			asm volatile("ptesync": : :"memory");
+			asm volatile(PPC_TLBIE_5(%0,%1,2,0,0) : :
+				     "r" (TLBIEL_INVAL_SET_LPID), "r" (lpid));
+			asm volatile("eieio; tlbsync; ptesync": : :"memory");
+		}
 		return;
 	}
 
-	rc = plpar_hcall_norets(H_TLB_INVALIDATE, H_TLBIE_P1_ENC(2, 0, 1),
+	rc = plpar_hcall_norets(H_TLB_INVALIDATE, H_TLBIE_P1_ENC(2, 0, radix),
 				lpid, TLBIEL_INVAL_SET_LPID);
 	if (rc)
 		pr_err("KVM: TLB LPID invalidation hcall failed, rc=%ld\n", rc);
@@ -430,23 +463,43 @@ static void kvmhv_flush_lpid(unsigned int lpid)
 
 void kvmhv_set_ptbl_entry(unsigned int lpid, u64 dw0, u64 dw1)
 {
+	bool radix;
+
 	if (!kvmhv_on_pseries()) {
 		mmu_partition_table_set_entry(lpid, dw0, dw1);
 		return;
 	}
 
+	/* radix flag based on old entry */
+	radix = !!(be64_to_cpu(pseries_partition_tb[lpid].patb0) & PATB_HR);
 	pseries_partition_tb[lpid].patb0 = cpu_to_be64(dw0);
 	pseries_partition_tb[lpid].patb1 = cpu_to_be64(dw1);
 	/* L0 will do the necessary barriers */
-	kvmhv_flush_lpid(lpid);
+	kvmhv_flush_lpid(lpid, radix);
+}
+
+static inline int kvmhv_patb_get_hpt_order(u64 patb0)
+{
+	return (patb0 & PATB_HTABSIZE) + 18;
+}
+
+static inline u64 kvmhv_patb_get_htab_size(int order)
+{
+	return (order - 18) & PATB_HTABSIZE;
 }
 
 static void kvmhv_set_nested_ptbl(struct kvm_nested_guest *gp)
 {
 	unsigned long dw0;
 
-	dw0 = PATB_HR | radix__get_tree_size() |
-		__pa(gp->shadow_pgtable) | RADIX_PGD_INDEX_SIZE;
+	if (gp->radix) {
+		dw0 = PATB_HR | radix__get_tree_size() |
+			__pa(gp->shadow_pgtable) | RADIX_PGD_INDEX_SIZE;
+	} else {
+		dw0 = (PATB_HTABORG & __pa(gp->shadow_hpt.virt)) |
+			(PATB_PS & gp->l1_gr_to_hr) |
+			kvmhv_patb_get_htab_size(gp->shadow_hpt.order);
+	}
 	kvmhv_set_ptbl_entry(gp->shadow_lpid, dw0, gp->process_table);
 }
 
@@ -521,6 +574,15 @@ long kvmhv_copy_tofrom_guest_nested(struct kvm_vcpu *vcpu)
 
 	mutex_lock(&gp->tlb_lock);
 
+	if (!gp->radix) {
+		/*
+		 * Currently quadrants are the only way to read nested guest
+		 * memory, which is only valid for a radix guest.
+		 */
+		rc = H_PARAMETER;
+		goto out_unlock;
+	}
+
 	if (is_load) {
 		/* Load from the nested guest into our buffer */
 		rc = __kvmhv_copy_tofrom_guest_radix(gp->shadow_lpid, pid,
@@ -556,6 +618,69 @@ not_found:
 	goto out_unlock;
 }
 
+/* Caller must hold gp->tlb_lock */
+static int kvmhv_switch_to_radix_nested(struct kvm_nested_guest *gp)
+{
+	struct kvm *kvm = gp->l1_host;
+	pgd_t *pgtable;
+
+	/* try to allocate a radix tree */
+	pgtable = pgd_alloc(kvm->mm);
+	if (!pgtable) {
+		pr_err_ratelimited("KVM: Couldn't alloc nested radix tree\n");
+		return -ENOMEM;
+	}
+
+	/* mmu_lock protects shadow_hpt & radix in nested guest struct */
+	spin_lock(&kvm->mmu_lock);
+	kvmppc_free_hpt(&gp->shadow_hpt);
+	gp->radix = 1;
+	gp->shadow_pgtable = pgtable;
+	spin_unlock(&kvm->mmu_lock);
+
+	/* remove all nested rmap entries and perform global invalidation */
+	kvmhv_remove_all_nested_rmap_lpid(kvm, gp->l1_lpid);
+	kvmhv_flush_lpid(gp->shadow_lpid, gp->radix);
+
+	return 0;
+}
+
+/* Caller must hold gp->tlb_lock */
+static int kvmhv_switch_to_hpt_nested(struct kvm_nested_guest *gp, int order)
+{
+	struct kvm *kvm = gp->l1_host;
+	struct kvm_hpt_info info;
+	int rc;
+
+	/* try to allocate an hpt */
+	rc = kvmppc_allocate_hpt(&info, order);
+	if (rc) {
+		pr_err_ratelimited("KVM: Couldn't alloc nested hpt\n");
+		return rc;
+	}
+
+	/* mmu_lock protects shadow_pgtable & radix in nested guest struct */
+	spin_lock(&kvm->mmu_lock);
+	kvmppc_free_pgtable_radix(kvm, gp->shadow_pgtable, gp->shadow_lpid);
+	pgd_free(kvm->mm, gp->shadow_pgtable);
+	gp->shadow_pgtable = NULL;
+	gp->radix = 0;
+	gp->shadow_hpt = info;
+	spin_unlock(&kvm->mmu_lock);
+
+	/* remove all nested rmap entries and perform global invalidation */
+	kvmhv_remove_all_nested_rmap_lpid(kvm, gp->l1_lpid);
+	kvmhv_flush_lpid(gp->shadow_lpid, gp->radix);
+
+	return 0;
+}
+
+static inline u64 kvmhv_patb_ps_to_slb_llp(u64 patb)
+{
+	return (((patb & PATB_PS_L) >> PATB_PS_L_SHIFT) << SLB_VSID_L_SHIFT) |
+	       (((patb & PATB_PS_LP) >> PATB_PS_LP_SHIFT) << SLB_VSID_LP_SHIFT);
+}
+
 /*
  * Reload the partition table entry for a guest.
  * Caller must hold gp->tlb_lock.
@@ -567,23 +692,48 @@ static void kvmhv_update_ptbl_cache(struct kvm_nested_guest *gp)
 	unsigned long ptbl_addr;
 	struct kvm *kvm = gp->l1_host;
 
+	gp->l1_gr_to_hr = 0;
+	gp->process_table = 0;
 	ret = -EFAULT;
 	ptbl_addr = (kvm->arch.l1_ptcr & PRTB_MASK) + (gp->l1_lpid << 4);
 	if (gp->l1_lpid < (1ul << ((kvm->arch.l1_ptcr & PRTS_MASK) + 8)))
 		ret = kvm_read_guest(kvm, ptbl_addr,
 				     &ptbl_entry, sizeof(ptbl_entry));
-	if (ret) {
-		gp->l1_gr_to_hr = 0;
-		gp->process_table = 0;
-	} else {
-		gp->l1_gr_to_hr = be64_to_cpu(ptbl_entry.patb0);
-		gp->process_table = be64_to_cpu(ptbl_entry.patb1);
+	if (!ret) {
+		u64 patb0 = be64_to_cpu(ptbl_entry.patb0);
+		u64 process_table = be64_to_cpu(ptbl_entry.patb1);
+
+		if (patb0) {
+			bool radix = !!(patb0 & PATB_HR);
+
+			if (radix && !gp->radix)
+				ret = kvmhv_switch_to_radix_nested(gp);
+			else if (!radix && gp->radix)
+				ret = kvmhv_switch_to_hpt_nested(gp,
+					kvmhv_patb_get_hpt_order(patb0));
+			if (!ret) {
+				gp->l1_gr_to_hr = patb0;
+				gp->process_table = process_table;
+				if (!radix) { /* update vrma slb_v */
+					u64 senc;
+
+					senc = kvmhv_patb_ps_to_slb_llp(patb0);
+					gp->vrma_slb_v = senc | SLB_VSID_B_1T |
+						(VRMA_VSID << SLB_VSID_SHIFT_1T);
+				}
+			}
+		}
 	}
 	kvmhv_set_nested_ptbl(gp);
 }
 
 struct kvm_nested_guest *kvmhv_alloc_nested(struct kvm *kvm, unsigned int lpid)
 {
+	/*
+	 * Allocate the state for a nested guest.
+	 * Note: assume radix to avoid allocating a hpt when not necessary as
+	 * this can consume a large amount of contiguous memory in the host.
+	 */
 	struct kvm_nested_guest *gp;
 	long shadow_lpid;
 
@@ -620,15 +770,17 @@ static void kvmhv_release_nested(struct kvm_nested_guest *gp)
 {
 	struct kvm *kvm = gp->l1_host;
 
-	if (gp->shadow_pgtable) {
-		/*
-		 * No vcpu is using this struct and no call to
-		 * kvmhv_get_nested can find this struct,
-		 * so we don't need to hold kvm->mmu_lock.
-		 */
+	/*
+	 * No vcpu is using this struct and no call to
+	 * kvmhv_get_nested can find this struct,
+	 * so we don't need to hold kvm->mmu_lock.
+	 */
+	if (gp->radix && gp->shadow_pgtable) {
 		kvmppc_free_pgtable_radix(kvm, gp->shadow_pgtable,
 					  gp->shadow_lpid);
 		pgd_free(kvm->mm, gp->shadow_pgtable);
+	} else if ((!gp->radix) && gp->shadow_hpt.virt) {
+		kvmppc_free_hpt(&gp->shadow_hpt);
 	}
 	kvmhv_set_ptbl_entry(gp->shadow_lpid, 0, 0);
 	kvmppc_free_lpid(gp->shadow_lpid);
@@ -701,9 +853,18 @@ static void kvmhv_flush_nested(struct kvm_nested_guest *gp)
 	struct kvm *kvm = gp->l1_host;
 
 	spin_lock(&kvm->mmu_lock);
-	kvmppc_free_pgtable_radix(kvm, gp->shadow_pgtable, gp->shadow_lpid);
+	if (gp->radix) {
+		kvmppc_free_pgtable_radix(kvm, gp->shadow_pgtable,
+					  gp->shadow_lpid);
+	} else {
+		memset((void *) gp->shadow_hpt.virt, 0,
+			1UL << gp->shadow_hpt.order);
+		memset((void *) gp->shadow_hpt.rev, 0,
+			(1UL << (gp->shadow_hpt.order - 4)) *
+			sizeof(struct revmap_entry));
+	}
 	spin_unlock(&kvm->mmu_lock);
-	kvmhv_flush_lpid(gp->shadow_lpid);
+	kvmhv_flush_lpid(gp->shadow_lpid, gp->radix);
 	kvmhv_update_ptbl_cache(gp);
 	if (gp->l1_gr_to_hr == 0)
 		kvmhv_remove_nested(gp);
@@ -887,7 +1048,10 @@ static void kvmhv_update_nest_rmap_rc(struct kvm *kvm, u64 n_rmap,
 		return;
 
 	/* Find the pte */
-	ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
+	if (gp->radix)
+		ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
+	else
+		ptep = NULL;	/* XXX TODO */
 	/*
 	 * If the pte is present and the pfn is still the same, update the pte.
 	 * If the pfn has changed then this is a stale rmap entry, the nested
@@ -944,7 +1108,10 @@ static void kvmhv_invalidate_nest_rmap(struct kvm *kvm, u64 n_rmap,
 		return;
 
 	/* Find and invalidate the pte */
-	ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
+	if (gp->radix)
+		ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
+	else
+		ptep = NULL;	/* XXX TODO */
 	/* Don't spuriously invalidate ptes if the pfn has changed */
 	if (ptep && pte_present(*ptep) && ((pte_val(*ptep) & mask) == hpa))
 		kvmppc_unmap_pte(kvm, ptep, gpa, shift, NULL, gp->shadow_lpid);
@@ -1012,9 +1179,9 @@ static void kvmhv_free_memslot_nest_rmap(struct kvm_memory_slot *free)
 	}
 }
 
-static bool kvmhv_invalidate_shadow_pte(struct kvm_vcpu *vcpu,
-					struct kvm_nested_guest *gp,
-					long gpa, int *shift_ret)
+static bool kvmhv_invalidate_shadow_pte_radix(struct kvm_vcpu *vcpu,
+					      struct kvm_nested_guest *gp,
+					      long gpa, int *shift_ret)
 {
 	struct kvm *kvm = vcpu->kvm;
 	bool ret = false;
@@ -1079,6 +1246,7 @@ static int kvmhv_emulate_tlbie_tlb_addr(struct kvm_vcpu *vcpu, int lpid,
 	long npages;
 	int shift, shadow_shift;
 	unsigned long addr;
+	int rc = 0;
 
 	shift = ap_to_shift(ap);
 	addr = epn << 12;
@@ -1094,17 +1262,25 @@ static int kvmhv_emulate_tlbie_tlb_addr(struct kvm_vcpu *vcpu, int lpid,
 		return 0;
 	mutex_lock(&gp->tlb_lock);
 
+	/* XXX TODO hpt */
+	if (!gp->radix) {
+		rc = -EINVAL;
+		goto out_unlock;
+	}
+
 	/* There may be more than one host page backing this single guest pte */
 	do {
-		kvmhv_invalidate_shadow_pte(vcpu, gp, addr, &shadow_shift);
+		kvmhv_invalidate_shadow_pte_radix(vcpu, gp, addr,
+						  &shadow_shift);
 
 		npages -= 1UL << (shadow_shift - PAGE_SHIFT);
 		addr += 1UL << shadow_shift;
 	} while (npages > 0);
 
+out_unlock:
 	mutex_unlock(&gp->tlb_lock);
 	kvmhv_put_nested(gp);
-	return 0;
+	return rc;
 }
 
 static void kvmhv_emulate_tlbie_lpid(struct kvm_vcpu *vcpu,
@@ -1112,6 +1288,7 @@ static void kvmhv_emulate_tlbie_lpid(struct kvm_vcpu *vcpu,
 {
 	struct kvm *kvm = vcpu->kvm;
 
+	/* XXX TODO hpt */
 	mutex_lock(&gp->tlb_lock);
 	switch (ric) {
 	case 0:
@@ -1119,8 +1296,8 @@ static void kvmhv_emulate_tlbie_lpid(struct kvm_vcpu *vcpu,
 		spin_lock(&kvm->mmu_lock);
 		kvmppc_free_pgtable_radix(kvm, gp->shadow_pgtable,
 					  gp->shadow_lpid);
-		kvmhv_flush_lpid(gp->shadow_lpid);
 		spin_unlock(&kvm->mmu_lock);
+		kvmhv_flush_lpid(gp->shadow_lpid, gp->radix);
 		break;
 	case 1:
 		/*
@@ -1358,9 +1535,9 @@ static inline int kvmppc_radix_shift_to_level(int shift)
 }
 
 /* called with gp->tlb_lock held */
-static long int __kvmhv_nested_page_fault(struct kvm_run *run,
-					  struct kvm_vcpu *vcpu,
-					  struct kvm_nested_guest *gp)
+static long int __kvmhv_nested_page_fault_radix(struct kvm_run *run,
+						struct kvm_vcpu *vcpu,
+						struct kvm_nested_guest *gp)
 {
 	struct kvm *kvm = vcpu->kvm;
 	struct kvm_memory_slot *memslot;
@@ -1524,8 +1701,16 @@ static long int __kvmhv_nested_page_fault(struct kvm_run *run,
 	return ret;
 
  inval:
-	kvmhv_invalidate_shadow_pte(vcpu, gp, n_gpa, NULL);
+	kvmhv_invalidate_shadow_pte_radix(vcpu, gp, n_gpa, NULL);
 	return RESUME_GUEST;
+}
+
+/* called with gp->tlb_lock held */
+static long int __kvmhv_nested_page_fault_hash(struct kvm_run *run,
+					       struct kvm_vcpu *vcpu,
+					       struct kvm_nested_guest *gp)
+{
+	return -EINVAL;
 }
 
 long int kvmhv_nested_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu)
@@ -1534,7 +1719,10 @@ long int kvmhv_nested_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu)
 	long int ret;
 
 	mutex_lock(&gp->tlb_lock);
-	ret = __kvmhv_nested_page_fault(run, vcpu, gp);
+	if (gp->radix)
+		ret = __kvmhv_nested_page_fault_radix(run, vcpu, gp);
+	else
+		ret = __kvmhv_nested_page_fault_hash(run, vcpu, gp);
 	mutex_unlock(&gp->tlb_lock);
 	return ret;
 }
