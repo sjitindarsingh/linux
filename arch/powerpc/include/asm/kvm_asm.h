@@ -104,6 +104,11 @@
  * completely in the guest.
  */
 #define BOOK3S_INTERRUPT_HV_RM_HARD	0x5555
+/*
+ * Special trap used when running a nested guest to communicate that control
+ * should be passed back to the L1 guest. e.g. Because interrupt pending
+ */
+#define BOOK3S_INTERRUPT_HV_NEST_EXIT	0x5556
 
 #define BOOK3S_IRQPRIO_SYSTEM_RESET		0
 #define BOOK3S_IRQPRIO_DATA_SEGMENT		1

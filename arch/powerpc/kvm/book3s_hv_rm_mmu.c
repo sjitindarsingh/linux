@@ -1166,8 +1166,8 @@ static struct mmio_hpte_cache_entry *
  * preempt_disable(), otherwise, the holding of HPTE_V_HVLOCK
  * can trigger deadlock issue.
  */
-long kvmppc_hv_find_lock_hpte(struct kvm *kvm, gva_t eaddr, unsigned long slb_v,
-			      unsigned long valid)
+long kvmppc_hv_find_lock_hpte(struct kvm_hpt_info *hpt, gva_t eaddr,
+			     unsigned long slb_v, unsigned long valid)
 {
 	unsigned int i;
 	unsigned int pshift;
@@ -1195,7 +1195,7 @@ long kvmppc_hv_find_lock_hpte(struct kvm *kvm, gva_t eaddr, unsigned long slb_v,
 		somask = (1UL << 28) - 1;
 		vsid = (slb_v & ~SLB_VSID_B) >> SLB_VSID_SHIFT;
 	}
-	hash = (vsid ^ ((eaddr & somask) >> pshift)) & kvmppc_hpt_mask(&kvm->arch.hpt);
+	hash = (vsid ^ ((eaddr & somask) >> pshift)) & kvmppc_hpt_mask(hpt);
 	avpn = slb_v & ~(somask >> 16);	/* also includes B */
 	avpn |= (eaddr & somask) >> 16;
 
@@ -1206,7 +1206,7 @@ long kvmppc_hv_find_lock_hpte(struct kvm *kvm, gva_t eaddr, unsigned long slb_v,
 	val |= avpn;
 
 	for (;;) {
-		hpte = (__be64 *)(kvm->arch.hpt.virt + (hash << 7));
+		hpte = (__be64 *)(hpt->virt + (hash << 7));
 
 		for (i = 0; i < 16; i += 2) {
 			/* Read the PTE racily */
@@ -1242,7 +1242,7 @@ long kvmppc_hv_find_lock_hpte(struct kvm *kvm, gva_t eaddr, unsigned long slb_v,
 		if (val & HPTE_V_SECONDARY)
 			break;
 		val |= HPTE_V_SECONDARY;
-		hash = hash ^ kvmppc_hpt_mask(&kvm->arch.hpt);
+		hash = hash ^ kvmppc_hpt_mask(hpt);
 	}
 	return -1;
 }
@@ -1265,7 +1265,9 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 			  unsigned long slb_v, unsigned int status,
 			  bool data, bool is_realmode)
 {
+	struct kvm_nested_guest *nested;
 	struct kvm *kvm = vcpu->kvm;
+	struct kvm_hpt_info *hpt;
 	long int index;
 	unsigned long v, r, gr, orig_v;
 	__be64 *hpte;
@@ -1275,12 +1277,20 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 	struct mmio_hpte_cache_entry *cache_entry = NULL;
 	long mmio_update = 0;
 
+	hpt = &kvm->arch.hpt;
+	nested = vcpu->arch.nested;
+	if (nested)
+		hpt = &nested->shadow_hpt;
+
 	/* For protection fault, expect to find a valid HPTE */
 	valid = HPTE_V_VALID;
 	if (status & DSISR_NOHPTE) {
 		valid |= HPTE_V_ABSENT;
-		mmio_update = atomic64_read(&kvm->arch.mmio_update);
-		cache_entry = mmio_cache_search(vcpu, addr, slb_v, mmio_update);
+		if (!nested) {
+			mmio_update = atomic64_read(&kvm->arch.mmio_update);
+			cache_entry = mmio_cache_search(vcpu, addr, slb_v,
+							mmio_update);
+		}
 	}
 	if (cache_entry) {
 		index = cache_entry->pte_index;
@@ -1288,20 +1298,26 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 		r = cache_entry->hpte_r;
 		gr = cache_entry->rpte;
 	} else {
-		index = kvmppc_hv_find_lock_hpte(kvm, addr, slb_v, valid);
+		index = kvmppc_hv_find_lock_hpte(hpt, addr, slb_v, valid);
 		if (index < 0) {
-			if (status & DSISR_NOHPTE)
+			if (status & DSISR_NOHPTE) {
+				if (nested) {
+					/* have to look for HPTE in L1's HPT */
+					vcpu->arch.pgfault_index = index;
+					return -1;
+				}
 				return status;	/* there really was no HPTE */
+			}
 			return 0;	/* for prot fault, HPTE disappeared */
 		}
-		hpte = (__be64 *)(kvm->arch.hpt.virt + (index << 4));
+		hpte = (__be64 *)(hpt->virt + (index << 4));
 		v = orig_v = be64_to_cpu(hpte[0]) & ~HPTE_V_HVLOCK;
 		r = be64_to_cpu(hpte[1]);
 		if (cpu_has_feature(CPU_FTR_ARCH_300)) {
 			v = hpte_new_to_old_v(v, r);
 			r = hpte_new_to_old_r(r);
 		}
-		rev = &kvm->arch.hpt.rev[index];
+		rev = &hpt->rev[index];
 		if (is_realmode)
 			rev = real_vmalloc_addr(rev);
 		gr = rev->guest_rpte;
@@ -1318,17 +1334,25 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 	key = (vcpu->arch.shregs.msr & MSR_PR) ? SLB_VSID_KP : SLB_VSID_KS;
 	status &= ~DSISR_NOHPTE;	/* DSISR_NOHPTE == SRR1_ISI_NOPT */
 	if (!data) {
-		if (gr & (HPTE_R_N | HPTE_R_G))
-			return status | SRR1_ISI_N_OR_G;
-		if (!hpte_read_permission(pp, slb_v & key))
-			return status | SRR1_ISI_PROT;
+		if (gr & (HPTE_R_N | HPTE_R_G)) {
+			status |= SRR1_ISI_N_OR_G;
+			goto forward_to_guest;
+		}
+		if (!hpte_read_permission(pp, slb_v & key)) {
+			status |= SRR1_ISI_PROT;
+			goto forward_to_guest;
+		}
 	} else if (status & DSISR_ISSTORE) {
 		/* check write permission */
-		if (!hpte_write_permission(pp, slb_v & key))
-			return status | DSISR_PROTFAULT;
+		if (!hpte_write_permission(pp, slb_v & key)) {
+			status |= DSISR_PROTFAULT;
+			goto forward_to_guest;
+		}
 	} else {
-		if (!hpte_read_permission(pp, slb_v & key))
-			return status | DSISR_PROTFAULT;
+		if (!hpte_read_permission(pp, slb_v & key)) {
+			status |= DSISR_PROTFAULT;
+			goto forward_to_guest;
+		}
 	}
 
 	/* Check storage key, if applicable */
@@ -1343,13 +1367,14 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 	/* Save HPTE info for virtual-mode handler */
 	vcpu->arch.pgfault_addr = addr;
 	vcpu->arch.pgfault_index = index;
+
 	vcpu->arch.pgfault_hpte[0] = v;
 	vcpu->arch.pgfault_hpte[1] = r;
 	vcpu->arch.pgfault_cache = cache_entry;
 
 	/* Check the storage key to see if it is possibly emulated MMIO */
-	if ((r & (HPTE_R_KEY_HI | HPTE_R_KEY_LO)) ==
-	    (HPTE_R_KEY_HI | HPTE_R_KEY_LO)) {
+	if (!nested && (r & (HPTE_R_KEY_HI | HPTE_R_KEY_LO)) ==
+			    (HPTE_R_KEY_HI | HPTE_R_KEY_LO)) {
 		if (!cache_entry) {
 			unsigned int pshift = 12;
 			unsigned int pshift_index;
@@ -1373,5 +1398,18 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 	}
 
 	return -1;		/* send fault up to host kernel mode */
+
+forward_to_guest:
+	if (nested) {
+		/*
+		 * This was technically caused by missing permissions in the L1
+		 * pte, go up to the virtual mode handler so we can forward
+		 * this interrupt to L1.
+		 */
+		vcpu->arch.pgfault_index = -1;
+		vcpu->arch.fault_dsisr = status;
+		return -1;
+	}
+	return status;
 }
 EXPORT_SYMBOL_GPL(kvmppc_hpte_hv_fault);

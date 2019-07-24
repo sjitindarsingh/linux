@@ -283,5 +283,20 @@ int kvmppc_xive_attach_escalation(struct kvm_vcpu *vcpu, u8 prio,
 				  bool single_escalation);
 struct kvmppc_xive *kvmppc_xive_get_device(struct kvm *kvm, u32 type);
 
+static inline bool xive_interrupt_pending(struct kvm_vcpu *vcpu)
+{
+        if (!xics_on_xive())
+                return false;
+        return vcpu->arch.irq_pending || vcpu->arch.xive_saved_state.pipr <
+                vcpu->arch.xive_saved_state.cppr;
+}
+
+#else /* !CONFIG_KVM_XICS */
+
+static inline bool xive_interrupt_pending(struct kvm_vcpu *vcpu)
+{
+        return false;
+}
+
 #endif /* CONFIG_KVM_XICS */
 #endif /* _KVM_PPC_BOOK3S_XICS_H */
