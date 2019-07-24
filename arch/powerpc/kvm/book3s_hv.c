@@ -74,6 +74,7 @@
 #include <asm/hw_breakpoint.h>
 
 #include "book3s.h"
+#include "book3s_xive.h"
 
 #define CREATE_TRACE_POINTS
 #include "trace_hv.h"
@@ -1520,7 +1521,11 @@ static int kvmppc_handle_nested_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 	/* We're good on these - the host merely wanted to get our attention */
 	case BOOK3S_INTERRUPT_HV_DECREMENTER:
 		vcpu->stat.dec_exits++;
-		r = RESUME_GUEST;
+		/* if the guest hdec has expired then it wants control back */
+		if (mftb() >= vcpu->arch.hdec_exp)
+			r = RESUME_HOST;
+		else
+			r = RESUME_GUEST;
 		break;
 	case BOOK3S_INTERRUPT_EXTERNAL:
 		vcpu->stat.ext_intr_exits++;
@@ -1582,6 +1587,15 @@ static int kvmppc_handle_nested_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 		r = RESUME_GUEST;
 		if (!xics_on_xive())
 			kvmppc_xics_rm_complete(vcpu, 0);
+		break;
+	case BOOK3S_INTERRUPT_HV_NEST_EXIT:
+		/*
+		 * Occurs on nested guest entry path to indicate that control
+		 * should be passed back to l1 guest hypervisor.
+		 * e.g. because of pending interrupt
+		 */
+		vcpu->arch.trap = 0;
+		r = RESUME_HOST;
 		break;
 	default:
 		r = RESUME_HOST;
@@ -2957,7 +2971,6 @@ static void post_guest_process(struct kvmppc_vcore *vc, bool is_master)
 {
 	int still_running = 0, i;
 	u64 now;
-	long ret;
 	struct kvm_vcpu *vcpu;
 
 	spin_lock(&vc->lock);
@@ -2978,13 +2991,16 @@ static void post_guest_process(struct kvmppc_vcore *vc, bool is_master)
 
 		trace_kvm_guest_exit(vcpu);
 
-		ret = RESUME_GUEST;
-		if (vcpu->arch.trap)
-			ret = kvmppc_handle_exit_hv(vcpu->arch.kvm_run, vcpu,
-						    vcpu->arch.run_task);
-
-		vcpu->arch.ret = ret;
-		vcpu->arch.trap = 0;
+		vcpu->arch.ret = RESUME_GUEST;
+		if (vcpu->arch.trap) {
+			if (vcpu->arch.nested)
+				vcpu->arch.ret = kvmppc_handle_nested_exit(
+						 vcpu->arch.kvm_run, vcpu);
+			else
+				vcpu->arch.ret = kvmppc_handle_exit_hv(
+						 vcpu->arch.kvm_run, vcpu,
+						 vcpu->arch.run_task);
+		}
 
 		spin_lock(&vc->lock);
 		if (is_kvmppc_resume_guest(vcpu->arch.ret)) {
@@ -3297,6 +3313,7 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 			if (!vcpu->arch.ptid)
 				thr0_done = true;
 			active |= 1 << (thr + vcpu->arch.ptid);
+			vcpu->arch.trap = 0;
 		}
 		/*
 		 * We need to start the first thread of each subcore
@@ -3847,21 +3864,6 @@ static void shrink_halt_poll_ns(struct kvmppc_vcore *vc)
 		vc->halt_poll_ns /= halt_poll_ns_shrink;
 }
 
-#ifdef CONFIG_KVM_XICS
-static inline bool xive_interrupt_pending(struct kvm_vcpu *vcpu)
-{
-	if (!xics_on_xive())
-		return false;
-	return vcpu->arch.irq_pending || vcpu->arch.xive_saved_state.pipr <
-		vcpu->arch.xive_saved_state.cppr;
-}
-#else
-static inline bool xive_interrupt_pending(struct kvm_vcpu *vcpu)
-{
-	return false;
-}
-#endif /* CONFIG_KVM_XICS */
-
 static bool kvmppc_vcpu_woken(struct kvm_vcpu *vcpu)
 {
 	if (vcpu->arch.pending_exceptions || vcpu->arch.prodded ||
@@ -4013,7 +4015,7 @@ static int kvmhv_setup_mmu(struct kvm_vcpu *vcpu)
 	return r;
 }
 
-static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
+int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 {
 	int n_ceded, i, r;
 	struct kvmppc_vcore *vc;
@@ -4082,7 +4084,8 @@ static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 			continue;
 		}
 		for_each_runnable_thread(i, v, vc) {
-			kvmppc_core_prepare_to_enter(v);
+			if (!vcpu->arch.nested)
+				kvmppc_core_prepare_to_enter(v);
 			if (signal_pending(v->arch.run_task)) {
 				kvmppc_remove_runnable(vc, v);
 				v->stat.signal_exits++;

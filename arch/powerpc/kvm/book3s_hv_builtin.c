@@ -759,26 +759,40 @@ void kvmhv_p9_restore_lpcr(struct kvm_split_mode *sip)
  * Is there a PRIV_DOORBELL pending for the guest (on POWER9)?
  * Can we inject a Decrementer or a External interrupt?
  */
-void kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
+int kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 {
 	int ext;
 	unsigned long vec = 0;
-	unsigned long lpcr;
+	unsigned long old_lpcr, lpcr;
+
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+	/*
+	 * Don't enter a nested guest if there is something pending for this
+	 * vcpu for the l1 guest. Return -1 to indicate this.
+	 */
+	if (vcpu->arch.nested && (vcpu->arch.pending_exceptions ||
+				  vcpu->arch.prodded ||
+				  vcpu->arch.doorbell_request ||
+				  xive_interrupt_pending(vcpu)))
+		return -1;
+#endif
 
 	/* Insert EXTERNAL bit into LPCR at the MER bit position */
 	ext = (vcpu->arch.pending_exceptions >> BOOK3S_IRQPRIO_EXTERNAL) & 1;
-	lpcr = mfspr(SPRN_LPCR);
-	lpcr |= ext << LPCR_MER_SH;
-	mtspr(SPRN_LPCR, lpcr);
-	isync();
+	old_lpcr = mfspr(SPRN_LPCR);
+	lpcr = old_lpcr | (ext << LPCR_MER_SH);
+	if (lpcr != old_lpcr) {
+		mtspr(SPRN_LPCR, lpcr);
+		isync();
+	}
 
 	if (vcpu->arch.shregs.msr & MSR_EE) {
 		if (ext) {
 			vec = BOOK3S_INTERRUPT_EXTERNAL;
 		} else {
-			long int dec = mfspr(SPRN_DEC);
+			s64 dec = mfspr(SPRN_DEC);
 			if (!(lpcr & LPCR_LD))
-				dec = (int) dec;
+				dec = (s32) dec;
 			if (dec < 0)
 				vec = BOOK3S_INTERRUPT_DECREMENTER;
 		}
@@ -795,12 +809,13 @@ void kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 		vcpu->arch.shregs.msr = msr;
 	}
 
-	if (vcpu->arch.doorbell_request) {
+	if (cpu_has_feature(CPU_FTR_ARCH_300) && vcpu->arch.doorbell_request) {
 		mtspr(SPRN_DPDES, 1);
 		vcpu->arch.vcore->dpdes = 1;
 		smp_wmb();
 		vcpu->arch.doorbell_request = 0;
 	}
+	return 0;
 }
 
 static void flush_guest_tlb(struct kvm *kvm)

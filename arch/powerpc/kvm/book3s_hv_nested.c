@@ -386,7 +386,7 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 		if (radix)
 			r = kvmhv_run_single_vcpu(vcpu->arch.kvm_run, vcpu);
 		else
-			r = RESUME_HOST; /* XXX TODO hpt entry path */
+			r = kvmppc_run_vcpu(vcpu->arch.kvm_run, vcpu);
 	} while (is_kvmppc_resume_guest(r));
 
 	/* save L2 state for return */

@@ -158,7 +158,7 @@ extern void kvmppc_mmu_flush_segments(struct kvm_vcpu *vcpu);
 extern int kvmppc_book3s_hv_page_fault(struct kvm_run *run,
 			struct kvm_vcpu *vcpu, unsigned long addr,
 			unsigned long status);
-extern long kvmppc_hv_find_lock_hpte(struct kvm *kvm, gva_t eaddr,
+extern long kvmppc_hv_find_lock_hpte(struct kvm_hpt_info *hpt, gva_t eaddr,
 			unsigned long slb_v, unsigned long valid);
 extern int kvmppc_hv_emulate_mmio(struct kvm_run *run, struct kvm_vcpu *vcpu,
 			unsigned long gpa, gva_t ea, int is_store);
@@ -315,6 +315,7 @@ void kvmhv_release_all_nested(struct kvm *kvm);
 long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu);
 long kvmhv_do_nested_tlbie(struct kvm_vcpu *vcpu);
 int kvmhv_run_single_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu);
+int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu);
 void kvmhv_save_hv_regs(struct kvm_vcpu *vcpu, struct hv_guest_state *hr);
 void kvmhv_save_guest_slb(struct kvm_vcpu *vcpu, struct guest_slb *slbp);
 void kvmhv_restore_guest_slb(struct kvm_vcpu *vcpu, struct guest_slb *slbp);

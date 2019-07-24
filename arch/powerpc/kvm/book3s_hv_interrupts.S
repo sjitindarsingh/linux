@@ -58,10 +58,20 @@ END_FTR_SECTION_IFCLR(CPU_FTR_ARCH_207S)
 	/*
 	 * Put whatever is in the decrementer into the
 	 * hypervisor decrementer.
+	 * If running a nested guest then put the lower of the host decrementer
+	 * and the guest hypervisor decrementer into the hypervisor decrementer
+	 * since we want control back from the nested guest when either expires.
 	 */
 BEGIN_FTR_SECTION
 	ld	r5, HSTATE_KVM_VCORE(r13)
-	ld	r6, VCORE_KVM(r5)
+	ld	r6, HSTATE_KVM_VCPU(r13)
+	cmpdi   cr1, r6, 0              /* Do we actually have a vcpu? */
+	beq     cr1, 33f
+	ld      r7, VCPU_NESTED(r6)
+	cmpdi   cr1, r7, 0              /* Do we have a nested guest? */
+	beq     cr1, 33f
+	ld      r10, VCPU_HDEC_EXP(r6)  /* If so load the hdec expiry */
+33:	ld	r6, VCORE_KVM(r5)
 	ld	r9, KVM_HOST_LPCR(r6)
 	andis.	r9, r9, LPCR_LD@h
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
@@ -72,8 +82,17 @@ BEGIN_FTR_SECTION
 	bne	32f
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	extsw	r8,r8
-32:	mtspr	SPRN_HDEC,r8
-	add	r8,r8,r7
+BEGIN_FTR_SECTION
+32:	beq     cr1, 34f		/* did we load hdec expiry above? */
+	subf    r10, r7, r10		/* r10 = guest_hdec = hdec_exp - tb */
+	cmpd    r8, r10			/* host decrementer < hdec? */
+	ble     34f
+	mtspr   SPRN_HDEC, r10		/* put guest_hdec into the hv decr */
+	b       35f
+34:
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
+	mtspr	SPRN_HDEC,r8		/* put host decr into hv decr */
+35:	add	r8,r8,r7
 	std	r8,HSTATE_DECEXP(r13)
 
 	/* Jump to partition switch code */

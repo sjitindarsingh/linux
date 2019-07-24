@@ -511,9 +511,14 @@ int main(void)
 	OFFSET(VCPU_VPA, kvm_vcpu, arch.vpa.pinned_addr);
 	OFFSET(VCPU_VPA_DIRTY, kvm_vcpu, arch.vpa.dirty);
 	OFFSET(VCPU_HEIR, kvm_vcpu, arch.emul_inst);
+	OFFSET(VCPU_LPCR, kvm_vcpu, arch.lpcr);
 	OFFSET(VCPU_NESTED, kvm_vcpu, arch.nested);
+	OFFSET(VCPU_NESTED_LPID, kvm_nested_guest, shadow_lpid);
+	OFFSET(VCPU_NESTED_RADIX, kvm_nested_guest, radix);
+	OFFSET(VCPU_NESTED_VRMA_SLB_V, kvm_nested_guest, vrma_slb_v);
 	OFFSET(VCPU_CPU, kvm_vcpu, cpu);
 	OFFSET(VCPU_THREAD_CPU, kvm_vcpu, arch.thread_cpu);
+	OFFSET(VCPU_HDEC_EXP, kvm_vcpu, arch.hdec_exp);
 #endif
 #ifdef CONFIG_PPC_BOOK3S
 	OFFSET(VCPU_PURR, kvm_vcpu, arch.purr);

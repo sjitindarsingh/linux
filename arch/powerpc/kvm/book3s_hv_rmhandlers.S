@@ -606,15 +606,29 @@ kvmppc_hv_entry:
 	cmpwi	r6,0
 	bne	10f
 
-	lwz	r7,KVM_LPID(r9)
+	/* Load guest lpid (on P9 need to check if running a nested guest) */
 BEGIN_FTR_SECTION
+	cmpdi	r4, 0			/* do we have a vcpu? */
+	beq	19f
+	ld	r5, VCPU_NESTED(r4)	/* vcpu running nested guest? */
+	cmpdi	cr2, r5, 0		/* use cr2 as indication of nested */
+	/*
+	 * If we're using this entry path for a nested guest that nested guest
+	 * must be hash, otherwise we'd have used __kvmhv_vcpu_entry_p9.
+	 */
+	beq	cr2, 19f
+	ld	r7, VCPU_NESTED_LPID(r5)
+	b	20f
+19:
+FTR_SECTION_ELSE
 	ld	r6,KVM_SDR1(r9)
 	li	r0,LPID_RSVD		/* switch to reserved LPID */
 	mtspr	SPRN_LPID,r0
 	ptesync
 	mtspr	SPRN_SDR1,r6		/* switch to partition page table */
-END_FTR_SECTION_IFCLR(CPU_FTR_ARCH_300)
-	mtspr	SPRN_LPID,r7
+ALT_FTR_SECTION_END_IFSET(CPU_FTR_ARCH_300)
+	lwz	r7,KVM_LPID(r9)
+20:	mtspr	SPRN_LPID,r7
 	isync
 
 	/* See if we need to flush the TLB. */
@@ -892,7 +906,7 @@ ALT_FTR_SECTION_END_IFCLR(CPU_FTR_ARCH_300)
 	HMT_MEDIUM
 21:
 	/* Set LPCR. */
-	ld	r8,VCORE_LPCR(r5)
+	ld	r8,VCPU_LPCR(r4)
 	mtspr	SPRN_LPCR,r8
 	isync
 
@@ -915,10 +929,14 @@ ALT_FTR_SECTION_END_IFCLR(CPU_FTR_ARCH_300)
 	blt	hdec_soon
 
 	/* For hash guest, clear out and reload the SLB */
+BEGIN_FTR_SECTION
+	bne	cr2, 10f		/* cr2 indicates nested -> hash */
 	ld	r6, VCPU_KVM(r4)
 	lbz	r0, KVM_RADIX(r6)
 	cmpwi	r0, 0
 	bne	9f
+10:
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	li	r6, 0
 	slbmte	r6, r6
 	slbia
@@ -1018,19 +1036,18 @@ no_xive:
 	stw	r0, STACK_SLOT_SHORT_PATH(r1)
 
 deliver_guest_interrupt:	/* r4 = vcpu, r13 = paca */
-	/* Check if we can deliver an external or decrementer interrupt now */
-	ld	r0, VCPU_PENDING_EXC(r4)
-BEGIN_FTR_SECTION
-	/* On POWER9, also check for emulated doorbell interrupt */
-	lbz	r3, VCPU_DBELL_REQ(r4)
-	or	r0, r0, r3
-END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
-	cmpdi	r0, 0
-	beq	71f
+	/* Check if we can deliver external/decrementer/dbell interrupt now */
 	mr	r3, r4
 	bl	kvmppc_guest_entry_inject_int
-	ld	r4, HSTATE_KVM_VCPU(r13)
+	cmpdi	r3, 0
+	beq	71f
+	/* kvmppc_guest_entry_inject_int returned -1 don't enter nested guest */
+	ld	r9, HSTATE_KVM_VCPU(r13)
+	li	r12, BOOK3S_INTERRUPT_HV_NEST_EXIT
+	b	guest_exit_cont
+
 71:
+	ld	r4, HSTATE_KVM_VCPU(r13)
 	ld	r6, VCPU_SRR0(r4)
 	ld	r7, VCPU_SRR1(r4)
 	mtspr	SPRN_SRR0, r6
@@ -1462,11 +1479,17 @@ guest_exit_cont:		/* r9 = vcpu, r12 = trap, r13 = paca */
 	bne	guest_exit_short_path
 
 	/* For hash guest, read the guest SLB and save it away */
-	ld	r5, VCPU_KVM(r9)
-	lbz	r0, KVM_RADIX(r5)
 	li	r5, 0
+BEGIN_FTR_SECTION
+	ld	r6, VCPU_NESTED(r9)	/* vcpu running nested guest? */
+	cmpdi	r6, 0
+	bne	4f			/* must be hash if we're nested */
+	ld	r7, VCPU_KVM(r9)
+	lbz	r0, KVM_RADIX(r7)
 	cmpwi	r0, 0
 	bne	3f			/* for radix, save 0 entries */
+4:
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	lwz	r0,VCPU_SLB_NR(r9)	/* number of entries in SLB */
 	mtctr	r0
 	li	r6,0
@@ -1517,7 +1540,7 @@ guest_bypass:
 	mftb	r6
 	/* On P9, if the guest has large decr enabled, don't sign extend */
 BEGIN_FTR_SECTION
-	ld	r4, VCORE_LPCR(r3)
+	ld	r4, VCPU_LPCR(r9)
 	andis.	r4, r4, LPCR_LD@h
 	bne	16f
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
@@ -1749,6 +1772,9 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	/*
 	 * Are we running hash or radix ?
 	 */
+	ld	r6, VCPU_NESTED(r9)	/* vcpu running nested guest? */
+	cmpdi	r6, 0
+	bne	2f			/* must be hash if we're nested */
 	ld	r5, VCPU_KVM(r9)
 	lbz	r0, KVM_RADIX(r5)
 	cmpwi	cr2, r0, 0
@@ -2036,22 +2062,38 @@ kvmppc_tm_emul:
  * reflect the HDSI to the guest as a DSI.
  */
 kvmppc_hdsi:
-	ld	r3, VCPU_KVM(r9)
-	lbz	r0, KVM_RADIX(r3)
 	mfspr	r4, SPRN_HDAR
 	mfspr	r6, SPRN_HDSISR
 BEGIN_FTR_SECTION
 	/* Look for DSISR canary. If we find it, retry instruction */
 	cmpdi	r6, 0x7fff
 	beq	6f
+	/* Are we hash or radix? */
+	ld	r3, VCPU_NESTED(r9)
+	cmpdi	cr2, r3, 0
+	beq	cr2, 10f
+	lbz	r0, VCPU_NESTED_RADIX(r3)	/* nested check nested->radix */
+	b	11f
+10:	ld      r5, VCPU_KVM(r9)
+	lbz     r0, KVM_RADIX(r5)	/* !nested check kvm->arch.radix */
+11:	cmpwi	r0, 0
+	bne	.Lradix_hdsi            /* on radix, just save DAR/DSISR/ASDR */
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
-	cmpwi	r0, 0
-	bne	.Lradix_hdsi		/* on radix, just save DAR/DSISR/ASDR */
 	/* HPTE not found fault or protection fault? */
 	andis.	r0, r6, (DSISR_NOHPTE | DSISR_PROTFAULT)@h
 	beq	1f			/* if not, send it to the guest */
 	andi.	r0, r11, MSR_DR		/* data relocation enabled? */
-	beq	3f
+	bne	3f
+	/* not relocated, load the VRMA_SLB_V for kvmppc_hpte_hv_fault() */
+BEGIN_FTR_SECTION
+	beq	cr2, 12f			/* cr2 indicates nested */
+	ld	r5, VCPU_NESTED_VRMA_SLB_V(r3)	/* r3 = nested (loaded above) */
+	b	4f
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
+	ld	r5, VCPU_KVM(r9)
+12:	ld	r5, KVM_VRMA_SLB_V(r5)
+	b	4f
+3:
 BEGIN_FTR_SECTION
 	mfspr	r5, SPRN_ASDR		/* on POWER9, use ASDR to get VSID */
 	b	4f
@@ -2097,10 +2139,6 @@ fast_interrupt_c_return:
 	mr	r4, r9
 	b	fast_guest_return
 
-3:	ld	r5, VCPU_KVM(r9)	/* not relocated, use VRMA */
-	ld	r5, KVM_VRMA_SLB_V(r5)
-	b	4b
-
 	/* If this is for emulated MMIO, load the instruction word */
 2:	li	r8, KVM_INST_FETCH_FAILED	/* In case lwz faults */
 
@@ -2137,14 +2175,32 @@ fast_interrupt_c_return:
  * it is an HPTE not found fault for a page that we have paged out.
  */
 kvmppc_hisi:
-	ld	r3, VCPU_KVM(r9)
-	lbz	r0, KVM_RADIX(r3)
-	cmpwi	r0, 0
+BEGIN_FTR_SECTION
+	/* Are we hash or radix? */
+	ld	r3, VCPU_NESTED(r9)
+	cmpdi	cr2, r3, 0
+	beq	cr2, 10f
+	lbz	r0, VCPU_NESTED_RADIX(r3)	/* nested check nested->radix */
+	b	11f
+10:	ld      r6, VCPU_KVM(r9)
+	lbz     r0, KVM_RADIX(r6)	/* !nested check kvm->arch.radix */
+11:	cmpwi	r0, 0
 	bne	.Lradix_hisi		/* for radix, just save ASDR */
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	andis.	r0, r11, SRR1_ISI_NOPT@h
 	beq	1f
 	andi.	r0, r11, MSR_IR		/* instruction relocation enabled? */
-	beq	3f
+	bne	3f
+	/* not relocated, load the VRMA_SLB_V for kvmppc_hpte_hv_fault() */
+BEGIN_FTR_SECTION
+	beq	cr2, 12f			/* cr2 indicates nested */
+	ld	r5, VCPU_NESTED_VRMA_SLB_V(r3)	/* r3 = nested (loaded above) */
+	b	4f
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
+	ld	r6, VCPU_KVM(r9)
+12:	ld	r5, KVM_VRMA_SLB_V(r6)
+	b	4f
+3:
 BEGIN_FTR_SECTION
 	mfspr	r5, SPRN_ASDR		/* on POWER9, use ASDR to get VSID */
 	b	4f
@@ -2178,10 +2234,6 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	mr	r10, r0
 	bl	kvmppc_msr_interrupt
 	b	fast_interrupt_c_return
-
-3:	ld	r6, VCPU_KVM(r9)	/* not relocated, use VRMA */
-	ld	r5, KVM_VRMA_SLB_V(r6)
-	b	4b
 
 /*
  * Try to handle an hcall in real mode.
@@ -2624,8 +2676,8 @@ END_FTR_SECTION(CPU_FTR_TM | CPU_FTR_P9_TM_HV_ASSIST, 0)
 	mftb	r5
 BEGIN_FTR_SECTION
 	/* On P9 check whether the guest has large decrementer mode enabled */
-	ld	r6, HSTATE_KVM_VCORE(r13)
-	ld	r6, VCORE_LPCR(r6)
+	ld	r6, HSTATE_KVM_VCPU(r13)
+	ld	r6, VCPU_LPCR(r6)
 	andis.	r6, r6, LPCR_LD@h
 	bne	68f
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)

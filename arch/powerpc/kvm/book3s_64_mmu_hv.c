@@ -361,7 +361,7 @@ static int kvmppc_mmu_book3s_64_hv_xlate(struct kvm_vcpu *vcpu, gva_t eaddr,
 
 	preempt_disable();
 	/* Find the HPTE in the hash table */
-	index = kvmppc_hv_find_lock_hpte(kvm, eaddr, slb_v,
+	index = kvmppc_hv_find_lock_hpte(&kvm->arch.hpt, eaddr, slb_v,
 					 HPTE_V_VALID | HPTE_V_ABSENT);
 	if (index < 0) {
 		preempt_enable();
