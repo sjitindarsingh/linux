@@ -1162,31 +1162,19 @@ static struct mmio_hpte_cache_entry *
 	return &vcpu->arch.mmio_cache.entry[index];
 }
 
-/* When called from virtmode, this func should be protected by
- * preempt_disable(), otherwise, the holding of HPTE_V_HVLOCK
- * can trigger deadlock issue.
+/*
+ * Given an effective address and a slb entry, work out the hash and the
+ * virtual page number
  */
-long kvmppc_hv_find_lock_hpte(struct kvm_hpt_info *hpt, gva_t eaddr,
-			     unsigned long slb_v, unsigned long valid)
+unsigned long kvmppc_hv_get_hash_value(struct kvm_hpt_info *hpt, gva_t eaddr,
+				       unsigned long slb_v, unsigned long *avpn,
+				       unsigned int *pshift_p)
 {
-	unsigned int i;
-	unsigned int pshift;
-	unsigned long somask;
-	unsigned long vsid, hash;
-	unsigned long avpn;
-	__be64 *hpte;
-	unsigned long mask, val;
-	unsigned long v, r, orig_v;
+	unsigned long hash, somask, vsid;
+	unsigned int pshift = 12;
 
-	/* Get page shift, work out hash and AVPN etc. */
-	mask = SLB_VSID_B | HPTE_V_AVPN | HPTE_V_SECONDARY;
-	val = 0;
-	pshift = 12;
-	if (slb_v & SLB_VSID_L) {
-		mask |= HPTE_V_LARGE;
-		val |= HPTE_V_LARGE;
+	if (slb_v & SLB_VSID_L)
 		pshift = slb_base_page_shift[(slb_v & SLB_VSID_LP) >> 4];
-	}
 	if (slb_v & SLB_VSID_B_1T) {
 		somask = (1UL << 40) - 1;
 		vsid = (slb_v & ~SLB_VSID_B) >> SLB_VSID_SHIFT_1T;
@@ -1196,14 +1184,38 @@ long kvmppc_hv_find_lock_hpte(struct kvm_hpt_info *hpt, gva_t eaddr,
 		vsid = (slb_v & ~SLB_VSID_B) >> SLB_VSID_SHIFT;
 	}
 	hash = (vsid ^ ((eaddr & somask) >> pshift)) & kvmppc_hpt_mask(hpt);
-	avpn = slb_v & ~(somask >> 16);	/* also includes B */
-	avpn |= (eaddr & somask) >> 16;
+	*avpn = slb_v & ~(somask >> 16);	/* also includes B */
+	*avpn |= (eaddr & somask) >> 16;
 
 	if (pshift >= 24)
-		avpn &= ~((1UL << (pshift - 16)) - 1);
+		*avpn &= ~((1UL << (pshift - 16)) - 1);
 	else
-		avpn &= ~0x7fUL;
-	val |= avpn;
+		*avpn &= ~0x7fUL;
+	*pshift_p = pshift;
+
+	return hash;
+}
+
+/* When called from virtmode, this func should be protected by
+ * preempt_disable(), otherwise, the holding of HPTE_V_HVLOCK
+ * can trigger deadlock issue.
+ */
+long kvmppc_hv_find_lock_hpte(struct kvm_hpt_info *hpt, gva_t eaddr,
+			     unsigned long slb_v, unsigned long valid)
+{
+	unsigned int i;
+	unsigned int pshift;
+	__be64 *hpte;
+	unsigned long hash, mask, val;
+	unsigned long v, r, orig_v;
+
+	/* Get page shift, work out hash and AVPN etc. */
+	mask = SLB_VSID_B | HPTE_V_AVPN | HPTE_V_SECONDARY;
+	hash = kvmppc_hv_get_hash_value(hpt, eaddr, slb_v, &val, &pshift);
+	if (slb_v & SLB_VSID_L) {
+		mask |= HPTE_V_LARGE;
+		val |= HPTE_V_LARGE;
+	}
 
 	for (;;) {
 		hpte = (__be64 *)(hpt->virt + (hash << 7));
