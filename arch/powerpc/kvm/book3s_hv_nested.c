@@ -258,6 +258,14 @@ static void kvmhv_nested_mmio_needed(struct kvm_vcpu *vcpu, u64 regs_ptr)
 	}
 }
 
+static void kvmhv_update_intr_msr(struct kvm_vcpu *vcpu, unsigned long lpcr)
+{
+	if (lpcr & LPCR_ILE)
+		vcpu->arch.intr_msr |= MSR_LE;
+	else
+		vcpu->arch.intr_msr &= ~MSR_LE;
+}
+
 long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 {
 	long int err, r, ret = H_SUCCESS;
@@ -367,6 +375,7 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 		LPCR_LPES | LPCR_MER | LPCR_HR | LPCR_GTSE | LPCR_UPRT |
 		LPCR_VPM1;
 	lpcr = (vc->lpcr & ~mask) | (l2_hv.lpcr & mask);
+	kvmhv_update_intr_msr(vcpu, lpcr);
 	sanitise_hv_regs(vcpu, &l2_hv);
 	restore_hv_regs(vcpu, &l2_hv);
 	if (!radix)
@@ -408,6 +417,7 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 		vcpu->arch.shregs.msr |= MSR_TS_S;
 	vc->tb_offset = saved_l1_hv.tb_offset;
 	restore_hv_regs(vcpu, &saved_l1_hv);
+	kvmhv_update_intr_msr(vcpu, vc->lpcr);
 	if (!radix)
 		kvmhv_restore_guest_slb(vcpu, saved_l1_slb);
 	vcpu->arch.purr += delta_purr;
@@ -1479,13 +1489,38 @@ long kvmhv_do_nested_tlbie(struct kvm_vcpu *vcpu)
 	return H_SUCCESS;
 }
 
-/* Used to convert a nested guest real address to a L1 guest real address */
-static int kvmhv_translate_addr_nested(struct kvm_vcpu *vcpu,
-				       struct kvm_nested_guest *gp,
-				       unsigned long n_gpa, unsigned long dsisr,
-				       struct kvmppc_pte *gpte_p)
+/*
+ * Inject a storage interrupt (instruction or data) to the nested guest.
+ *
+ * Normally don't inject interrupts to the nested guest directly but
+ * instead let it's guest hypervisor handle injecting interrupts. However
+ * there are cases where the guest hypervisor is providing access to a page
+ * but the level 0 hypervisor is not, and in this case we need to inject an
+ * interrupt directly.
+ */
+static void kvmhv_inject_nested_storage_int(struct kvm_vcpu *vcpu, bool data,
+					    bool writing, u64 addr, u64 flags)
 {
-	u64 fault_addr, flags = dsisr & DSISR_ISSTORE;
+	int vec = BOOK3S_INTERRUPT_INST_STORAGE;
+
+	if (writing)
+		flags |= DSISR_ISSTORE;
+	if (data) {
+		vec = BOOK3S_INTERRUPT_DATA_STORAGE;
+		kvmppc_set_dar(vcpu, addr);
+		kvmppc_set_dsisr(vcpu, flags);
+	}
+	kvmppc_inject_interrupt(vcpu, vec, flags);
+}
+
+/* Used to convert a radix nested guest real addr to a L1 guest real address */
+static int kvmhv_xlate_addr_nested_radix(struct kvm_vcpu *vcpu,
+					 struct kvm_nested_guest *gp,
+					 unsigned long n_gpa, bool data,
+					 bool writing,
+					 struct kvmppc_pte *gpte_p)
+{
+	u64 fault_addr, flags = writing ? DSISR_ISSTORE : 0ULL;
 	int ret;
 
 	ret = kvmppc_mmu_walk_radix_tree(vcpu, n_gpa, gpte_p, gp->l1_gr_to_hr,
@@ -1510,13 +1545,13 @@ static int kvmhv_translate_addr_nested(struct kvm_vcpu *vcpu,
 		goto forward_to_l1;
 	} else {
 		/* We found a pte -> check permissions */
-		if (dsisr & DSISR_ISSTORE) {
+		if (writing) {
 			/* Can we write? */
 			if (!gpte_p->may_write) {
 				flags |= DSISR_PROTFAULT;
 				goto forward_to_l1;
 			}
-		} else if (vcpu->arch.trap == BOOK3S_INTERRUPT_H_INST_STORAGE) {
+		} else if (!data) {
 			/* Can we execute? */
 			if (!gpte_p->may_execute) {
 				flags |= SRR1_ISI_N_OR_G;
@@ -1535,18 +1570,18 @@ static int kvmhv_translate_addr_nested(struct kvm_vcpu *vcpu,
 
 forward_to_l1:
 	vcpu->arch.fault_dsisr = flags;
-	if (vcpu->arch.trap == BOOK3S_INTERRUPT_H_INST_STORAGE) {
+	if (!data) {
 		vcpu->arch.shregs.msr &= ~0x783f0000ul;
-		vcpu->arch.shregs.msr |= flags;
+		vcpu->arch.shregs.msr |= (flags & 0x783f0000ul);
 	}
 	return RESUME_HOST;
 }
 
-static long kvmhv_handle_nested_set_rc(struct kvm_vcpu *vcpu,
-				       struct kvm_nested_guest *gp,
-				       unsigned long n_gpa,
-				       struct kvmppc_pte gpte,
-				       unsigned long dsisr)
+static long kvmhv_handle_nested_set_rc_radix(struct kvm_vcpu *vcpu,
+					     struct kvm_nested_guest *gp,
+					     unsigned long n_gpa,
+					     struct kvmppc_pte gpte,
+					     unsigned long dsisr)
 {
 	struct kvm *kvm = vcpu->kvm;
 	bool writing = !!(dsisr & DSISR_ISSTORE);
@@ -1622,7 +1657,8 @@ static long int __kvmhv_nested_page_fault_radix(struct kvm_run *run,
 	unsigned long *rmapp;
 	unsigned long n_gpa, gpa, gfn, perm = 0UL;
 	unsigned int shift, l1_shift, level;
-	bool writing = !!(dsisr & DSISR_ISSTORE);
+	bool data = vcpu->arch.trap == BOOK3S_INTERRUPT_H_DATA_STORAGE;
+	bool writing = data && (dsisr & DSISR_ISSTORE);
 	bool kvm_ro = false;
 	long int ret;
 
@@ -1637,7 +1673,8 @@ static long int __kvmhv_nested_page_fault_radix(struct kvm_run *run,
 	n_gpa = vcpu->arch.fault_gpa & ~0xF000000000000FFFULL;
 	if (!(dsisr & DSISR_PRTABLE_FAULT))
 		n_gpa |= ea & 0xFFF;
-	ret = kvmhv_translate_addr_nested(vcpu, gp, n_gpa, dsisr, &gpte);
+	ret = kvmhv_xlate_addr_nested_radix(vcpu, gp, n_gpa, data, writing,
+					    &gpte);
 
 	/*
 	 * If the hardware found a translation but we don't now have a usable
@@ -1653,7 +1690,8 @@ static long int __kvmhv_nested_page_fault_radix(struct kvm_run *run,
 
 	/* Failed to set the reference/change bits */
 	if (dsisr & DSISR_SET_RC) {
-		ret = kvmhv_handle_nested_set_rc(vcpu, gp, n_gpa, gpte, dsisr);
+		ret = kvmhv_handle_nested_set_rc_radix(vcpu, gp, n_gpa, gpte,
+						       dsisr);
 		if (ret == RESUME_HOST)
 			return ret;
 		if (ret)
@@ -1686,7 +1724,8 @@ static long int __kvmhv_nested_page_fault_radix(struct kvm_run *run,
 	if (!memslot || (memslot->flags & KVM_MEMSLOT_INVALID)) {
 		if (dsisr & (DSISR_PRTABLE_FAULT | DSISR_BADACCESS)) {
 			/* unusual error -> reflect to the guest as a DSI */
-			kvmppc_core_queue_data_storage(vcpu, ea, dsisr);
+			kvmhv_inject_nested_storage_int(vcpu, data, writing, ea,
+							dsisr);
 			return RESUME_GUEST;
 		}
 
@@ -1696,8 +1735,8 @@ static long int __kvmhv_nested_page_fault_radix(struct kvm_run *run,
 	if (memslot->flags & KVM_MEM_READONLY) {
 		if (writing) {
 			/* Give the guest a DSI */
-			kvmppc_core_queue_data_storage(vcpu, ea,
-					DSISR_ISSTORE | DSISR_PROTFAULT);
+			kvmhv_inject_nested_storage_int(vcpu, data, writing, ea,
+							DSISR_PROTFAULT);
 			return RESUME_GUEST;
 		}
 		kvm_ro = true;
