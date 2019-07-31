@@ -140,6 +140,7 @@ void kvmppc_inject_interrupt(struct kvm_vcpu *vcpu, int vec, u64 flags)
 	kvmppc_set_pc(vcpu, kvmppc_interrupt_offset(vcpu) + vec);
 	vcpu->arch.mmu.reset_msr(vcpu);
 }
+EXPORT_SYMBOL_GPL(kvmppc_inject_interrupt);
 
 static int kvmppc_book3s_vec2irqprio(unsigned int vec)
 {
