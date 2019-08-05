@@ -369,6 +369,15 @@ static inline unsigned long hpte_make_readonly(unsigned long ptel)
 	return ptel;
 }
 
+static inline unsigned long hpte_make_writable(unsigned long ptel)
+{
+	if ((ptel & HPTE_R_PP0) || (ptel & HPTE_R_PP) == PP_RWXX)
+		ptel = (ptel & ~HPTE_R_PPP) | PP_RWXX;
+	else
+		ptel = (ptel & ~HPTE_R_PP) | PP_RWRW;
+	return ptel;
+}
+
 static inline bool hpte_cache_flags_ok(unsigned long hptel, bool is_ci)
 {
 	unsigned int wimg = hptel & HPTE_R_WIMG;

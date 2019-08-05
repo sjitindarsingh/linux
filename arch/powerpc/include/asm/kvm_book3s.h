@@ -158,6 +158,10 @@ extern void kvmppc_mmu_flush_segments(struct kvm_vcpu *vcpu);
 extern int kvmppc_book3s_hv_page_fault(struct kvm_run *run,
 			struct kvm_vcpu *vcpu, unsigned long addr,
 			unsigned long status);
+extern unsigned long kvmppc_hv_get_hash_value(struct kvm_hpt_info *hpt,
+					      gva_t eaddr, unsigned long slb_v,
+					      unsigned long *avpn,
+					      unsigned int *pshift_p);
 extern long kvmppc_hv_find_lock_hpte(struct kvm_hpt_info *hpt, gva_t eaddr,
 			unsigned long slb_v, unsigned long valid);
 extern int kvmppc_hv_emulate_mmio(struct kvm_run *run, struct kvm_vcpu *vcpu,

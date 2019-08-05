@@ -1195,6 +1195,7 @@ unsigned long kvmppc_hv_get_hash_value(struct kvm_hpt_info *hpt, gva_t eaddr,
 
 	return hash;
 }
+EXPORT_SYMBOL_GPL(kvmppc_hv_get_hash_value);
 
 /* When called from virtmode, this func should be protected by
  * preempt_disable(), otherwise, the holding of HPTE_V_HVLOCK
@@ -1291,8 +1292,11 @@ long kvmppc_hpte_hv_fault(struct kvm_vcpu *vcpu, unsigned long addr,
 
 	hpt = &kvm->arch.hpt;
 	nested = vcpu->arch.nested;
-	if (nested)
+	if (nested) {
 		hpt = &nested->shadow_hpt;
+		/* reuse fault_gpa field to save slb for nested pgfault funcn */
+		vcpu->arch.fault_gpa = slb_v;
+	}
 
 	/* For protection fault, expect to find a valid HPTE */
 	valid = HPTE_V_VALID;
