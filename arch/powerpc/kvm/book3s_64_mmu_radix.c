@@ -1050,6 +1050,8 @@ static int kvm_radix_test_clear_dirty(struct kvm *kvm,
 		kvmhv_update_nest_rmap_rc_list(kvm, rmapp, _PAGE_DIRTY, 0,
 					       old & PTE_RPN_MASK,
 					       1UL << shift);
+		/* Notify anyone trying to map the page that it has changed */
+		kvm->mmu_notifier_seq++;
 		spin_unlock(&kvm->mmu_lock);
 	}
 	return ret;
