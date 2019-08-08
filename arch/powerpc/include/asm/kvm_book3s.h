@@ -241,7 +241,7 @@ extern void kvmppc_add_revmap_chain(struct kvm *kvm, struct revmap_entry *rev,
 			unsigned long *rmap, long pte_index, int realmode);
 extern void kvmppc_update_dirty_map(const struct kvm_memory_slot *memslot,
 			unsigned long gfn, unsigned long psize);
-extern void kvmppc_invalidate_hpte(struct kvm *kvm, __be64 *hptep,
+extern void kvmppc_invalidate_hpte(unsigned int lpid, __be64 *hptep,
 			unsigned long pte_index);
 void kvmppc_clear_ref_hpte(struct kvm *kvm, __be64 *hptep,
 			unsigned long pte_index);
