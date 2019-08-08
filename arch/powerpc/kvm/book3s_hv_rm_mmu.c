@@ -440,7 +440,7 @@ static inline int is_mmio_hpte(unsigned long v, unsigned long r)
 		(HPTE_R_KEY_HI | HPTE_R_KEY_LO));
 }
 
-static void do_tlbies(struct kvm *kvm, unsigned long *rbvalues,
+static void do_tlbies(unsigned int lpid, unsigned long *rbvalues,
 		      long npages, int global, bool need_sync)
 {
 	long i;
@@ -455,7 +455,7 @@ static void do_tlbies(struct kvm *kvm, unsigned long *rbvalues,
 			asm volatile("ptesync" : : : "memory");
 		for (i = 0; i < npages; ++i) {
 			asm volatile(PPC_TLBIE_5(%0,%1,0,0,0) : :
-				     "r" (rbvalues[i]), "r" (kvm->arch.lpid));
+				     "r" (rbvalues[i]), "r" (lpid));
 		}
 
 		if (cpu_has_feature(CPU_FTR_P9_TLBIE_BUG)) {
@@ -465,7 +465,7 @@ static void do_tlbies(struct kvm *kvm, unsigned long *rbvalues,
 			 */
 			asm volatile("ptesync": : :"memory");
 			asm volatile(PPC_TLBIE_5(%0,%1,0,0,0) : :
-				     "r" (rbvalues[0]), "r" (kvm->arch.lpid));
+				     "r" (rbvalues[0]), "r" (lpid));
 		}
 
 		asm volatile("eieio; tlbsync; ptesync" : : : "memory");
@@ -516,7 +516,8 @@ long kvmppc_do_h_remove(struct kvm *kvm, unsigned long flags,
 	if (v & HPTE_V_VALID) {
 		hpte[0] &= ~cpu_to_be64(HPTE_V_VALID);
 		rb = compute_tlbie_rb(v, pte_r, pte_index);
-		do_tlbies(kvm, &rb, 1, global_invalidates(kvm), true);
+		do_tlbies(kvm->arch.lpid, &rb, 1, global_invalidates(kvm),
+			  true);
 		/*
 		 * The reference (R) and change (C) bits in a HPT
 		 * entry can be set by hardware at any time up until
@@ -652,7 +653,7 @@ long kvmppc_do_h_bulk_remove(struct kvm_vcpu *vcpu, bool realmode)
 			break;
 
 		/* Now that we've collected a batch, do the tlbies */
-		do_tlbies(kvm, tlbrb, n, global, true);
+		do_tlbies(kvm->arch.lpid, tlbrb, n, global, true);
 
 		/* Read PTE low words after tlbie to get final R/C values */
 		for (k = 0; k < n; ++k) {
@@ -736,7 +737,8 @@ long kvmppc_do_h_protect(struct kvm_vcpu *vcpu, unsigned long flags,
 			rb = compute_tlbie_rb(v, r, pte_index);
 			hpte[0] = cpu_to_be64((pte_v & ~HPTE_V_VALID) |
 					      HPTE_V_ABSENT);
-			do_tlbies(kvm, &rb, 1, global_invalidates(kvm), true);
+			do_tlbies(kvm->arch.lpid, &rb, 1,
+				  global_invalidates(kvm), true);
 			/* Don't lose R/C bit updates done by hardware */
 			r |= be64_to_cpu(hpte[1]) & (HPTE_R_R | HPTE_R_C);
 			hpte[1] = cpu_to_be64(r);
@@ -898,7 +900,7 @@ long kvmppc_do_h_clear_mod(struct kvm_vcpu *vcpu, unsigned long flags,
 	if (v & HPTE_V_VALID) {
 		/* need to make it temporarily absent so C is stable */
 		hpte[0] |= cpu_to_be64(HPTE_V_ABSENT);
-		kvmppc_invalidate_hpte(kvm, hpte, pte_index);
+		kvmppc_invalidate_hpte(kvm->arch.lpid, hpte, pte_index);
 		r = be64_to_cpu(hpte[1]);
 		gr |= r & (HPTE_R_R | HPTE_R_C);
 		if (r & HPTE_R_C) {
@@ -1064,7 +1066,7 @@ long kvmppc_rm_h_page_init(struct kvm_vcpu *vcpu, unsigned long flags,
 	return ret;
 }
 
-void kvmppc_invalidate_hpte(struct kvm *kvm, __be64 *hptep,
+void kvmppc_invalidate_hpte(unsigned int lpid, __be64 *hptep,
 			unsigned long pte_index)
 {
 	unsigned long rb;
@@ -1078,7 +1080,7 @@ void kvmppc_invalidate_hpte(struct kvm *kvm, __be64 *hptep,
 		hp1 = hpte_new_to_old_r(hp1);
 	}
 	rb = compute_tlbie_rb(hp0, hp1, pte_index);
-	do_tlbies(kvm, &rb, 1, 1, true);
+	do_tlbies(lpid, &rb, 1, 1, true);
 }
 EXPORT_SYMBOL_GPL(kvmppc_invalidate_hpte);
 
@@ -1099,7 +1101,7 @@ void kvmppc_clear_ref_hpte(struct kvm *kvm, __be64 *hptep,
 	rbyte = (be64_to_cpu(hptep[1]) & ~HPTE_R_R) >> 8;
 	/* modify only the second-last byte, which contains the ref bit */
 	*((char *)hptep + 14) = rbyte;
-	do_tlbies(kvm, &rb, 1, 1, false);
+	do_tlbies(kvm->arch.lpid, &rb, 1, 1, false);
 }
 EXPORT_SYMBOL_GPL(kvmppc_clear_ref_hpte);
 

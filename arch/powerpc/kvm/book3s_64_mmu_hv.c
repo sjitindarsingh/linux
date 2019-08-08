@@ -701,7 +701,7 @@ int kvmppc_book3s_hv_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* HPTE was previously valid, so we need to invalidate it */
 		unlock_rmap(rmap);
 		hptep[0] |= cpu_to_be64(HPTE_V_ABSENT);
-		kvmppc_invalidate_hpte(kvm, hptep, index);
+		kvmppc_invalidate_hpte(kvm->arch.lpid, hptep, index);
 		/* don't lose previous R and C bits */
 		r |= be64_to_cpu(hptep[1]) & (HPTE_R_R | HPTE_R_C);
 	} else {
@@ -829,7 +829,7 @@ static void kvmppc_unmap_hpte(struct kvm *kvm, unsigned long i,
 	if ((be64_to_cpu(hptep[0]) & HPTE_V_VALID) &&
 	    hpte_rpn(ptel, psize) == gfn) {
 		hptep[0] |= cpu_to_be64(HPTE_V_ABSENT);
-		kvmppc_invalidate_hpte(kvm, hptep, i);
+		kvmppc_invalidate_hpte(kvm->arch.lpid, hptep, i);
 		hptep[1] &= ~cpu_to_be64(HPTE_R_KEY_HI | HPTE_R_KEY_LO);
 		/* Harvest R and C */
 		rcbits = be64_to_cpu(hptep[1]) & (HPTE_R_R | HPTE_R_C);
@@ -1094,7 +1094,7 @@ static int kvm_test_clear_dirty_npages(struct kvm *kvm, unsigned long *rmapp)
 
 		/* need to make it temporarily absent so C is stable */
 		hptep[0] |= cpu_to_be64(HPTE_V_ABSENT);
-		kvmppc_invalidate_hpte(kvm, hptep, i);
+		kvmppc_invalidate_hpte(kvm->arch.lpid, hptep, i);
 		v = be64_to_cpu(hptep[0]);
 		r = be64_to_cpu(hptep[1]);
 		if (r & HPTE_R_C) {
