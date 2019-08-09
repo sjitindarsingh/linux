@@ -17,7 +17,7 @@
 #include "xfs_trans.h"
 #include "xfs_inode_item.h"
 #include "xfs_bmap.h"
-#include "xfs_attr.h"
+#include "libxfs/xfs_attr.h"
 #include "xfs_attr_sf.h"
 #include "xfs_attr_remote.h"
 #include "xfs_attr_leaf.h"
