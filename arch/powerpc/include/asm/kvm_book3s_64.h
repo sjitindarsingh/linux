@@ -624,12 +624,12 @@ extern int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 			     unsigned long gpa, unsigned int level,
 			     unsigned long mmu_seq, unsigned int lpid,
 			     unsigned long *rmapp, struct rmap_nested **n_rmap);
-extern void kvmhv_insert_nest_rmap(struct kvm *kvm, unsigned long *rmapp,
+extern void kvmhv_insert_nest_rmap(unsigned long *rmapp,
 				   struct rmap_nested **n_rmap);
 extern void kvmhv_update_nest_rmap_rc_list(struct kvm *kvm, unsigned long *rmapp,
 					   unsigned long clr, unsigned long set,
 					   unsigned long hpa, unsigned long nbytes);
-extern void kvmhv_remove_nest_rmap_range(struct kvm *kvm,
+extern void kvmhv_invalidate_nest_rmap_range(struct kvm *kvm,
 				const struct kvm_memory_slot *memslot,
 				unsigned long gpa, unsigned long hpa,
 				unsigned long nbytes);

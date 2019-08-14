@@ -776,8 +776,8 @@ static inline bool kvmhv_n_rmap_is_equal(u64 rmap_1, u64 rmap_2)
 				       RMAP_NESTED_GPA_MASK));
 }
 
-void kvmhv_insert_nest_rmap(struct kvm *kvm, unsigned long *rmapp,
-			    struct rmap_nested **n_rmap)
+/* called with kvm->mmu_lock held */
+void kvmhv_insert_nest_rmap(unsigned long *rmapp, struct rmap_nested **n_rmap)
 {
 	struct llist_node *entry = ((struct llist_head *) rmapp)->first;
 	struct rmap_nested *cursor;
@@ -808,6 +808,11 @@ void kvmhv_insert_nest_rmap(struct kvm *kvm, unsigned long *rmapp,
 	*n_rmap = NULL;
 }
 
+/*
+ * called with kvm->mmu_lock held
+ * Given a single rmap entry, update the rc bits in the corresponding shadow
+ * pte. Should only be used to clear rc bits.
+ */
 static void kvmhv_update_nest_rmap_rc(struct kvm *kvm, u64 n_rmap,
 				      unsigned long clr, unsigned long set,
 				      unsigned long hpa, unsigned long mask)
@@ -838,8 +843,10 @@ static void kvmhv_update_nest_rmap_rc(struct kvm *kvm, u64 n_rmap,
 }
 
 /*
+ * called with kvm->mmu_lock held
  * For a given list of rmap entries, update the rc bits in all ptes in shadow
  * page tables for nested guests which are referenced by the rmap list.
+ * Should only be used to clear rc bits.
  */
 void kvmhv_update_nest_rmap_rc_list(struct kvm *kvm, unsigned long *rmapp,
 				    unsigned long clr, unsigned long set,
@@ -859,8 +866,12 @@ void kvmhv_update_nest_rmap_rc_list(struct kvm *kvm, unsigned long *rmapp,
 		kvmhv_update_nest_rmap_rc(kvm, rmap, clr, set, hpa, mask);
 }
 
-static void kvmhv_remove_nest_rmap(struct kvm *kvm, u64 n_rmap,
-				   unsigned long hpa, unsigned long mask)
+/*
+ * called with kvm->mmu_lock held
+ * Given a single rmap entry, invalidate the corresponding shadow pte.
+ */
+static void kvmhv_invalidate_nest_rmap(struct kvm *kvm, u64 n_rmap,
+				       unsigned long hpa, unsigned long mask)
 {
 	struct kvm_nested_guest *gp;
 	unsigned long gpa;
@@ -880,24 +891,35 @@ static void kvmhv_remove_nest_rmap(struct kvm *kvm, u64 n_rmap,
 		kvmppc_unmap_pte(kvm, ptep, gpa, shift, NULL, gp->shadow_lpid);
 }
 
-static void kvmhv_remove_nest_rmap_list(struct kvm *kvm, unsigned long *rmapp,
-					unsigned long hpa, unsigned long mask)
+/*
+ * called with kvm->mmu_lock held
+ * For a given list of rmap entries, invalidate the corresponding shadow ptes
+ * for nested guests which are referenced by the rmap list.
+ */
+static void kvmhv_invalidate_nest_rmap_list(struct kvm *kvm,
+					    unsigned long *rmapp,
+					    unsigned long hpa,
+					    unsigned long mask)
 {
 	struct llist_node *entry = llist_del_all((struct llist_head *) rmapp);
 	struct rmap_nested *cursor;
 	unsigned long rmap;
 
 	for_each_nest_rmap_safe(cursor, entry, &rmap) {
-		kvmhv_remove_nest_rmap(kvm, rmap, hpa, mask);
+		kvmhv_invalidate_nest_rmap(kvm, rmap, hpa, mask);
 		kfree(cursor);
 	}
 }
 
-/* called with kvm->mmu_lock held */
-void kvmhv_remove_nest_rmap_range(struct kvm *kvm,
-				  const struct kvm_memory_slot *memslot,
-				  unsigned long gpa, unsigned long hpa,
-				  unsigned long nbytes)
+/*
+ * called with kvm->mmu_lock held
+ * For a given memslot, invalidate all of the rmap entries which fall into the
+ * given range.
+ */
+void kvmhv_invalidate_nest_rmap_range(struct kvm *kvm,
+				      const struct kvm_memory_slot *memslot,
+				      unsigned long gpa, unsigned long hpa,
+				      unsigned long nbytes)
 {
 	unsigned long gfn, end_gfn;
 	unsigned long addr_mask;
@@ -912,10 +934,11 @@ void kvmhv_remove_nest_rmap_range(struct kvm *kvm,
 
 	for (; gfn < end_gfn; gfn++) {
 		unsigned long *rmap = &memslot->arch.rmap[gfn];
-		kvmhv_remove_nest_rmap_list(kvm, rmap, hpa, addr_mask);
+		kvmhv_invalidate_nest_rmap_list(kvm, rmap, hpa, addr_mask);
 	}
 }
 
+/* Free the nest rmap structures for a given memslot */
 static void kvmhv_free_memslot_nest_rmap(struct kvm_memory_slot *free)
 {
 	unsigned long page;
