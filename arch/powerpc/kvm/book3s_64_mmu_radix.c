@@ -411,7 +411,7 @@ void kvmppc_unmap_pte(struct kvm *kvm, pte_t *pte, unsigned long gpa,
 
 	gpa &= ~(page_size - 1);
 	hpa = old & PTE_RPN_MASK;
-	kvmhv_remove_nest_rmap_range(kvm, memslot, gpa, hpa, page_size);
+	kvmhv_invalidate_nest_rmap_range(kvm, memslot, gpa, hpa, page_size);
 
 	if ((old & _PAGE_DIRTY) && memslot->dirty_bitmap)
 		kvmppc_update_dirty_map(memslot, gfn, page_size);
@@ -649,7 +649,7 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 		}
 		kvmppc_radix_set_pte_at(kvm, gpa, (pte_t *)pud, pte);
 		if (rmapp && n_rmap)
-			kvmhv_insert_nest_rmap(kvm, rmapp, n_rmap);
+			kvmhv_insert_nest_rmap(rmapp, n_rmap);
 		ret = 0;
 		goto out_unlock;
 	}
@@ -701,7 +701,7 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 		}
 		kvmppc_radix_set_pte_at(kvm, gpa, pmdp_ptep(pmd), pte);
 		if (rmapp && n_rmap)
-			kvmhv_insert_nest_rmap(kvm, rmapp, n_rmap);
+			kvmhv_insert_nest_rmap(rmapp, n_rmap);
 		ret = 0;
 		goto out_unlock;
 	}
@@ -727,7 +727,7 @@ int kvmppc_create_pte(struct kvm *kvm, pgd_t *pgtable, pte_t pte,
 	}
 	kvmppc_radix_set_pte_at(kvm, gpa, ptep, pte);
 	if (rmapp && n_rmap)
-		kvmhv_insert_nest_rmap(kvm, rmapp, n_rmap);
+		kvmhv_insert_nest_rmap(rmapp, n_rmap);
 	ret = 0;
 
  out_unlock:
