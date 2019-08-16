@@ -770,10 +770,31 @@ static struct kvm_nested_guest *kvmhv_find_nested(struct kvm *kvm, int lpid)
 	return kvm->arch.nested_guests[lpid];
 }
 
-static inline bool kvmhv_n_rmap_is_equal(u64 rmap_1, u64 rmap_2)
+static inline u64 n_rmap_to_gpa(u64 rmap)
 {
-	return !((rmap_1 ^ rmap_2) & (RMAP_NESTED_LPID_MASK |
-				       RMAP_NESTED_GPA_MASK));
+	return ((rmap & RMAP_NESTED_GPA_MASK) >> RMAP_NESTED_GPA_SHIFT)
+		<< PAGE_SHIFT;
+}
+
+static inline u64 gpa_to_n_rmap(u64 gpa)
+{
+	return ((gpa >> PAGE_SHIFT) << RMAP_NESTED_GPA_SHIFT) &
+		RMAP_NESTED_GPA_MASK;
+}
+
+static inline int n_rmap_to_lpid(u64 rmap)
+{
+	return (int) ((rmap & RMAP_NESTED_LPID_MASK) >> RMAP_NESTED_LPID_SHIFT);
+}
+
+static inline u64 lpid_to_n_rmap(int lpid)
+{
+	return (((u64) lpid) << RMAP_NESTED_LPID_SHIFT) & RMAP_NESTED_LPID_MASK;
+}
+
+static inline bool kvmhv_n_rmap_is_equal(u64 rmap_1, u64 rmap_2, u64 mask)
+{
+	return !((rmap_1 ^ rmap_2) & mask);
 }
 
 /* called with kvm->mmu_lock held */
@@ -792,7 +813,8 @@ void kvmhv_insert_nest_rmap(unsigned long *rmapp, struct rmap_nested **n_rmap)
 
 	/* Do any entries match what we're trying to insert? */
 	for_each_nest_rmap_safe(cursor, entry, &rmap) {
-		if (kvmhv_n_rmap_is_equal(rmap, new_rmap))
+		if (kvmhv_n_rmap_is_equal(rmap, new_rmap, RMAP_NESTED_LPID_MASK
+							| RMAP_NESTED_GPA_MASK))
 			return;
 	}
 
@@ -822,8 +844,8 @@ static void kvmhv_update_nest_rmap_rc(struct kvm *kvm, u64 n_rmap,
 	unsigned int shift, lpid;
 	pte_t *ptep;
 
-	gpa = n_rmap & RMAP_NESTED_GPA_MASK;
-	lpid = (n_rmap & RMAP_NESTED_LPID_MASK) >> RMAP_NESTED_LPID_SHIFT;
+	gpa = n_rmap_to_gpa(n_rmap);
+	lpid = n_rmap_to_lpid(n_rmap);;
 	gp = kvmhv_find_nested(kvm, lpid);
 	if (!gp)
 		return;
@@ -878,8 +900,8 @@ static void kvmhv_invalidate_nest_rmap(struct kvm *kvm, u64 n_rmap,
 	unsigned int shift, lpid;
 	pte_t *ptep;
 
-	gpa = n_rmap & RMAP_NESTED_GPA_MASK;
-	lpid = (n_rmap & RMAP_NESTED_LPID_MASK) >> RMAP_NESTED_LPID_SHIFT;
+	gpa = n_rmap_to_gpa(n_rmap);
+	lpid = n_rmap_to_lpid(n_rmap);;
 	gp = kvmhv_find_nested(kvm, lpid);
 	if (!gp)
 		return;
@@ -1454,8 +1476,7 @@ static long int __kvmhv_nested_page_fault(struct kvm_run *run,
 	n_rmap = kzalloc(sizeof(*n_rmap), GFP_KERNEL);
 	if (!n_rmap)
 		return RESUME_GUEST; /* Let the guest try again */
-	n_rmap->rmap = (n_gpa & RMAP_NESTED_GPA_MASK) |
-		(((unsigned long) gp->l1_lpid) << RMAP_NESTED_LPID_SHIFT);
+	n_rmap->rmap = gpa_to_n_rmap(n_gpa) | lpid_to_n_rmap(gp->l1_lpid);
 	rmapp = &memslot->arch.rmap[gfn - memslot->base_gfn];
 	ret = kvmppc_create_pte(kvm, gp->shadow_pgtable, pte, n_gpa, level,
 				mmu_seq, gp->shadow_lpid, rmapp, &n_rmap);
