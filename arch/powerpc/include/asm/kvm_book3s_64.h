@@ -50,12 +50,13 @@ struct kvm_nested_guest {
 /*
  * We define a nested rmap entry as a single 64-bit quantity
  * 0xFFF0000000000000	12-bit lpid field
- * 0x000FFFFFFFFFF000	40-bit guest 4k page frame number
+ * 0x000FFFFFFFFFFFC0	46-bit guest page frame number (radix) or hpt index
  * 0x0000000000000001	1-bit  single entry flag
  */
 #define RMAP_NESTED_LPID_MASK		0xFFF0000000000000UL
 #define RMAP_NESTED_LPID_SHIFT		(52)
-#define RMAP_NESTED_GPA_MASK		0x000FFFFFFFFFF000UL
+#define RMAP_NESTED_GPA_MASK		0x000FFFFFFFFFFFC0UL
+#define RMAP_NESTED_GPA_SHIFT		(6)
 #define RMAP_NESTED_IS_SINGLE_ENTRY	0x0000000000000001UL
 
 /* Structure for a nested guest rmap entry */
