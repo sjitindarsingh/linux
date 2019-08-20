@@ -819,6 +819,53 @@ void kvmhv_insert_nest_rmap(unsigned long *rmapp, struct rmap_nested **n_rmap)
 	*n_rmap = NULL;
 }
 
+/* called with kvm->mmu_lock held */
+static void kvmhv_remove_nested_rmap_lpid(unsigned long *rmapp, int l1_lpid)
+{
+	struct llist_node **next = &(((struct llist_head *) rmapp)->first);
+	u64 match = lpid_to_n_rmap(l1_lpid);
+
+	while (*next) {
+		struct llist_node *entry = (*next);
+		struct rmap_nested *n_rmap = llist_entry(entry, typeof(*n_rmap),
+							 list);
+
+		if (kvmhv_n_rmap_is_equal(match, n_rmap->rmap,
+					  RMAP_NESTED_LPID_MASK)) {
+			*next = entry->next;
+			kfree(n_rmap);
+		} else {
+			next = &(entry->next);
+		}
+	}
+}
+
+/*
+ * caller must hold gp->tlb_lock
+ * For a given nested lpid, remove all of the rmap entries which match that
+ * nest lpid. Note that no invalidation/tlbie is done for the entries, it is
+ * assumed that the caller will perform an lpid wide invalidation after calling
+ * this function.
+ */
+static void kvmhv_remove_all_nested_rmap_lpid(struct kvm *kvm, int l1_lpid)
+{
+	struct kvm_memory_slot *memslot;
+
+	kvm_for_each_memslot(memslot, kvm_memslots(kvm)) {
+		unsigned long page;
+
+		for (page = 0; page < memslot->npages; page++) {
+			unsigned long *rmapp;
+
+			spin_lock(&kvm->mmu_lock);
+			rmapp = &memslot->arch.rmap[page];
+			if (*rmapp) /* Are there any rmap entries? */
+				kvmhv_remove_nested_rmap_lpid(rmapp, l1_lpid);
+			spin_unlock(&kvm->mmu_lock);
+		}
+	}
+}
+
 /*
  * called with kvm->mmu_lock held
  * Given a single rmap entry, update the rc bits in the corresponding shadow
