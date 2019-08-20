@@ -129,6 +129,17 @@
 #define TLBIEL_INVAL_SET_MASK	0xfff000	/* set number to inval. */
 #define TLBIEL_INVAL_SET_SHIFT	12
 
+/* Fields in the rb registers for the tlbie instruction */
+#define TLBIE_RB_AVA_4K		ASM_CONST(0xfffffffffffff000)
+#define TLBIE_RB_AVA_L		ASM_CONST(0xfffffffffff00000)
+#define TLBIE_RB_LP		ASM_CONST(0x00000000000ff000)
+#define TLBIE_RB_B		ASM_CONST(0x0000000000000300)
+#define TLBIE_RB_B_1T		ASM_CONST(0x0000000000000100)
+#define TLBIE_RB_B_SHIFT	50	/* Shift to match the pte location */
+#define TLBIE_RB_AVAL		ASM_CONST(0x00000000000000fe)
+#define TLBIE_RB_AVAL_SHIFT	12
+#define TLBIE_RB_L		ASM_CONST(0x0000000000000001)
+
 #define POWER7_TLB_SETS		128	/* # sets in POWER7 TLB */
 #define POWER8_TLB_SETS		512	/* # sets in POWER8 TLB */
 #define POWER9_TLB_SETS_HASH	256	/* # sets in POWER9 TLB Hash mode */
