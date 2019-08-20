@@ -800,31 +800,20 @@ static inline bool kvmhv_n_rmap_is_equal(u64 rmap_1, u64 rmap_2, u64 mask)
 /* called with kvm->mmu_lock held */
 void kvmhv_insert_nest_rmap(unsigned long *rmapp, struct rmap_nested **n_rmap)
 {
-	struct llist_node *entry = ((struct llist_head *) rmapp)->first;
+	struct llist_head *head = (struct llist_head *) rmapp;
 	struct rmap_nested *cursor;
-	u64 rmap, new_rmap = (*n_rmap)->rmap;
+	u64 new_rmap = (*n_rmap)->rmap;
 
-	/* Are there any existing entries? */
-	if (!(*rmapp)) {
-		/* No -> use the rmap as a single entry */
-		*rmapp = new_rmap | RMAP_NESTED_IS_SINGLE_ENTRY;
-		return;
-	}
-
-	/* Do any entries match what we're trying to insert? */
-	for_each_nest_rmap_safe(cursor, entry, &rmap) {
-		if (kvmhv_n_rmap_is_equal(rmap, new_rmap, RMAP_NESTED_LPID_MASK
-							| RMAP_NESTED_GPA_MASK))
+	/* Do any existing entries match what we're trying to insert? */
+	llist_for_each_entry(cursor, head->first, list) {
+		if (kvmhv_n_rmap_is_equal(cursor->rmap, new_rmap,
+					  RMAP_NESTED_LPID_MASK |
+					  RMAP_NESTED_GPA_MASK))
 			return;
 	}
 
-	/* Do we need to create a list or just add the new entry? */
-	rmap = *rmapp;
-	if (rmap & RMAP_NESTED_IS_SINGLE_ENTRY) /* Not previously a list */
-		*rmapp = 0UL;
-	llist_add(&((*n_rmap)->list), (struct llist_head *) rmapp);
-	if (rmap & RMAP_NESTED_IS_SINGLE_ENTRY) /* Not previously a list */
-		(*n_rmap)->list.next = (struct llist_node *) rmap;
+	/* Insert the new entry */
+	llist_add(&((*n_rmap)->list), head);
 
 	/* Set NULL so not freed by caller */
 	*n_rmap = NULL;
@@ -874,9 +863,9 @@ void kvmhv_update_nest_rmap_rc_list(struct kvm *kvm, unsigned long *rmapp,
 				    unsigned long clr, unsigned long set,
 				    unsigned long hpa, unsigned long nbytes)
 {
-	struct llist_node *entry = ((struct llist_head *) rmapp)->first;
+	struct llist_head *head = (struct llist_head *) rmapp;
 	struct rmap_nested *cursor;
-	unsigned long rmap, mask;
+	unsigned long mask;
 
 	if ((clr | set) & ~(_PAGE_DIRTY | _PAGE_ACCESSED))
 		return;
@@ -884,8 +873,9 @@ void kvmhv_update_nest_rmap_rc_list(struct kvm *kvm, unsigned long *rmapp,
 	mask = PTE_RPN_MASK & ~(nbytes - 1);
 	hpa &= mask;
 
-	for_each_nest_rmap_safe(cursor, entry, &rmap)
-		kvmhv_update_nest_rmap_rc(kvm, rmap, clr, set, hpa, mask);
+	llist_for_each_entry(cursor, head->first, list)
+		kvmhv_update_nest_rmap_rc(kvm, cursor->rmap, clr, set, hpa,
+					  mask);
 }
 
 /*
@@ -924,11 +914,10 @@ static void kvmhv_invalidate_nest_rmap_list(struct kvm *kvm,
 					    unsigned long mask)
 {
 	struct llist_node *entry = llist_del_all((struct llist_head *) rmapp);
-	struct rmap_nested *cursor;
-	unsigned long rmap;
+	struct rmap_nested *cursor, *next;
 
-	for_each_nest_rmap_safe(cursor, entry, &rmap) {
-		kvmhv_invalidate_nest_rmap(kvm, rmap, hpa, mask);
+	llist_for_each_entry_safe(cursor, next, entry, list) {
+		kvmhv_invalidate_nest_rmap(kvm, cursor->rmap, hpa, mask);
 		kfree(cursor);
 	}
 }
@@ -966,12 +955,12 @@ static void kvmhv_free_memslot_nest_rmap(struct kvm_memory_slot *free)
 	unsigned long page;
 
 	for (page = 0; page < free->npages; page++) {
-		unsigned long rmap, *rmapp = &free->arch.rmap[page];
-		struct rmap_nested *cursor;
+		unsigned long *rmapp = &free->arch.rmap[page];
+		struct rmap_nested *cursor, *next;
 		struct llist_node *entry;
 
 		entry = llist_del_all((struct llist_head *) rmapp);
-		for_each_nest_rmap_safe(cursor, entry, &rmap)
+		llist_for_each_entry_safe(cursor, next, entry, list)
 			kfree(cursor);
 	}
 }

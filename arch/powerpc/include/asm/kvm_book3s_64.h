@@ -48,65 +48,38 @@ struct kvm_nested_guest {
 };
 
 /*
+ * We use nested rmap entries to store information so that we can find pte
+ * entries in the shadow page table of a nested guest when the host is modifying
+ * a pte for a l1 guest page. For a radix nested guest this is the nested
+ * gpa which can then be used to walk the radix shadow page table to find a
+ * pte. For a hash nested guest this is an index into the shadow hpt which can
+ * be used to find a pte. Irrespective the lpid of the nested guest is stored.
+ *
+ * These entries are stored in a rmap_nested struct. There may be multiple
+ * entries for a single l1 guest page since that guest may have multiple nested
+ * guests and map the same page into more than 1, or a single nested guest may
+ * map the same l1 guest page with multiple hpt entries. To accommodate this
+ * the rmap_nested entries are linked together in a singly linked list with the
+ * corresponding rmap entry in the rmap array of the memslot containing the
+ * head pointer of the linked list (or NULL if list is empty).
+ */
+
+/*
  * We define a nested rmap entry as a single 64-bit quantity
  * 0xFFF0000000000000	12-bit lpid field
  * 0x000FFFFFFFFFFFC0	46-bit guest page frame number (radix) or hpt index
- * 0x0000000000000001	1-bit  single entry flag
+ * 0x000000000000003F	6-bit unused field
  */
 #define RMAP_NESTED_LPID_MASK		0xFFF0000000000000UL
 #define RMAP_NESTED_LPID_SHIFT		(52)
 #define RMAP_NESTED_GPA_MASK		0x000FFFFFFFFFFFC0UL
 #define RMAP_NESTED_GPA_SHIFT		(6)
-#define RMAP_NESTED_IS_SINGLE_ENTRY	0x0000000000000001UL
 
 /* Structure for a nested guest rmap entry */
 struct rmap_nested {
 	struct llist_node list;
-	u64 rmap;
+	u64 rmap;			/* layout defined above */
 };
-
-/*
- * for_each_nest_rmap_safe - iterate over the list of nested rmap entries
- *			     safe against removal of the list entry or NULL list
- * @pos:	a (struct rmap_nested *) to use as a loop cursor
- * @node:	pointer to the first entry
- *		NOTE: this can be NULL
- * @rmapp:	an (unsigned long *) in which to return the rmap entries on each
- *		iteration
- *		NOTE: this must point to already allocated memory
- *
- * The nested_rmap is a llist of (struct rmap_nested) entries pointed to by the
- * rmap entry in the memslot. The list is always terminated by a "single entry"
- * stored in the list element of the final entry of the llist. If there is ONLY
- * a single entry then this is itself in the rmap entry of the memslot, not a
- * llist head pointer.
- *
- * Note that the iterator below assumes that a nested rmap entry is always
- * non-zero.  This is true for our usage because the LPID field is always
- * non-zero (zero is reserved for the host).
- *
- * This should be used to iterate over the list of rmap_nested entries with
- * processing done on the u64 rmap value given by each iteration. This is safe
- * against removal of list entries and it is always safe to call free on (pos).
- *
- * e.g.
- * struct rmap_nested *cursor;
- * struct llist_node *first;
- * unsigned long rmap;
- * for_each_nest_rmap_safe(cursor, first, &rmap) {
- *	do_something(rmap);
- *	free(cursor);
- * }
- */
-#define for_each_nest_rmap_safe(pos, node, rmapp)			       \
-	for ((pos) = llist_entry((node), typeof(*(pos)), list);		       \
-	     (node) &&							       \
-	     (*(rmapp) = ((RMAP_NESTED_IS_SINGLE_ENTRY & ((u64) (node))) ?     \
-			  ((u64) (node)) : ((pos)->rmap))) &&		       \
-	     (((node) = ((RMAP_NESTED_IS_SINGLE_ENTRY & ((u64) (node))) ?      \
-			 ((struct llist_node *) ((pos) = NULL)) :	       \
-			 (pos)->list.next)), true);			       \
-	     (pos) = llist_entry((node), typeof(*(pos)), list))
 
 struct kvm_nested_guest *kvmhv_get_nested(struct kvm *kvm, int l1_lpid,
 					  bool create);
