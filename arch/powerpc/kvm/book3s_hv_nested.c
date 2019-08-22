@@ -1135,30 +1135,61 @@ static void kvmhv_update_nest_rmap_rc(struct kvm *kvm, u64 n_rmap,
 				      unsigned long hpa, unsigned long mask)
 {
 	struct kvm_nested_guest *gp;
-	unsigned long gpa;
-	unsigned int shift, lpid;
-	pte_t *ptep;
+	unsigned int lpid;
 
-	gpa = n_rmap_to_gpa(n_rmap);
 	lpid = n_rmap_to_lpid(n_rmap);;
 	gp = kvmhv_find_nested(kvm, lpid);
 	if (!gp)
 		return;
 
-	/* Find the pte */
-	if (gp->radix)
-		ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
-	else
-		ptep = NULL;	/* XXX TODO */
 	/*
-	 * If the pte is present and the pfn is still the same, update the pte.
-	 * If the pfn has changed then this is a stale rmap entry, the nested
-	 * gpa actually points somewhere else now, and there is nothing to do.
-	 * XXX A future optimisation would be to remove the rmap entry here.
+	 * Find the pte, and ensure it's valid and still points to the same
+	 * host page. If the pfn has changed then this is a stale rmap entry,
+	 * the shadow pte actually points somewhere else now, and there is
+	 * nothing to do. Otherwise clear the requested rc bits from the shadow
+	 * pte and perform the appropriate cache invalidation.
+	 * XXX A future optimisation would be to remove the rmap entry
 	 */
-	if (ptep && pte_present(*ptep) && ((pte_val(*ptep) & mask) == hpa)) {
-		__radix_pte_update(ptep, clr, set);
-		kvmppc_radix_tlbie_page(kvm, gpa, shift, lpid);
+	if (gp->radix) {
+		unsigned long gpa = n_rmap_to_gpa(n_rmap);
+		unsigned int shift;
+		pte_t *ptep;
+
+		ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
+		/* pte present and still points to the same host page? */
+		if (ptep && pte_present(*ptep) && ((pte_val(*ptep) & mask) ==
+						   hpa)) {
+			__radix_pte_update(ptep, clr, set);
+			kvmppc_radix_tlbie_page(kvm, gpa, shift, lpid);
+		}
+	 } else {
+		unsigned long v, r, index = n_rmap_to_index(n_rmap);
+		__be64 *hptep = (__be64 *)(gp->shadow_hpt.virt + (index << 4));
+
+		preempt_disable();
+		while (!try_lock_hpte(hptep, HPTE_V_HVLOCK))
+			cpu_relax();
+		v = be64_to_cpu(hptep[0]) & ~HPTE_V_HVLOCK;
+		r = be64_to_cpu(hptep[1]);
+
+		/*
+		 * It's not enough to just clear the rc bits here since the
+		 * hardware can just set them again transparently, we need to
+		 * make the pte invalid so that an attempt to access the page
+		 * will invoke the page fault handler and we can ensure
+		 * consistency across the rc bits in the various ptes.
+		 */
+		if ((v & HPTE_V_VALID) && ((r & mask) == hpa)) {
+			/* Invalidate existing pte */
+			v = (v & ~HPTE_V_VALID) | HPTE_V_ABSENT;
+			hptep[0] |= cpu_to_be64(HPTE_V_ABSENT);
+			kvmppc_invalidate_hpte(gp->shadow_lpid, hptep, index);
+			/* Zero second double word */
+			hptep[1] = 0ULL;
+			eieio();
+		}
+		__unlock_hpte(hptep, v);
+		preempt_enable();
 	}
 }
 
@@ -1179,7 +1210,7 @@ void kvmhv_update_nest_rmap_rc_list(struct kvm *kvm, unsigned long *rmapp,
 	if ((clr | set) & ~(_PAGE_DIRTY | _PAGE_ACCESSED))
 		return;
 
-	mask = PTE_RPN_MASK & ~(nbytes - 1);
+	mask = HPTE_R_RPN_3_0 & ~(nbytes - 1);
 	hpa &= mask;
 
 	llist_for_each_entry(cursor, head->first, list)
@@ -1195,24 +1226,54 @@ static void kvmhv_invalidate_nest_rmap(struct kvm *kvm, u64 n_rmap,
 				       unsigned long hpa, unsigned long mask)
 {
 	struct kvm_nested_guest *gp;
-	unsigned long gpa;
-	unsigned int shift, lpid;
-	pte_t *ptep;
+	unsigned int lpid;
 
-	gpa = n_rmap_to_gpa(n_rmap);
 	lpid = n_rmap_to_lpid(n_rmap);;
 	gp = kvmhv_find_nested(kvm, lpid);
 	if (!gp)
 		return;
 
-	/* Find and invalidate the pte */
-	if (gp->radix)
+	/*
+	 * Find the pte, and ensure it's valid and still points to the same
+	 * host page. If the pfn has changed then this is a stale rmap entry,
+	 * the shadow pte actually points somewhere else now, and there is
+	 * nothing to do. Otherwise invalidate the shadow pte and perform the
+	 * appropriate cache invalidation.
+	 */
+	if (gp->radix) {
+		unsigned long gpa = n_rmap_to_gpa(n_rmap);
+		unsigned int shift;
+		pte_t *ptep;
+
 		ptep = __find_linux_pte(gp->shadow_pgtable, gpa, NULL, &shift);
-	else
-		ptep = NULL;	/* XXX TODO */
-	/* Don't spuriously invalidate ptes if the pfn has changed */
-	if (ptep && pte_present(*ptep) && ((pte_val(*ptep) & mask) == hpa))
-		kvmppc_unmap_pte(kvm, ptep, gpa, shift, NULL, gp->shadow_lpid);
+		/* pte present and still points to the same host page? */
+		if (ptep && pte_present(*ptep) && ((pte_val(*ptep) & mask) ==
+						   hpa))
+			kvmppc_unmap_pte(kvm, ptep, gpa, shift, NULL,
+					 gp->shadow_lpid);
+	} else {
+		unsigned long v, r, index = n_rmap_to_index(n_rmap);
+		__be64 *hptep = (__be64 *)(gp->shadow_hpt.virt + (index << 4));
+
+		preempt_disable();
+		while (!try_lock_hpte(hptep, HPTE_V_HVLOCK))
+			cpu_relax();
+		v = be64_to_cpu(hptep[0]) & ~HPTE_V_HVLOCK;
+		r = be64_to_cpu(hptep[1]);
+
+		/* Make pte absent if valid and host addr matches */
+		if ((v & HPTE_V_VALID) && ((r & mask) == hpa)) {
+			/* Invalidate existing pte */
+			v = (v & ~HPTE_V_VALID) | HPTE_V_ABSENT;
+			hptep[0] |= cpu_to_be64(HPTE_V_ABSENT);
+			kvmppc_invalidate_hpte(gp->shadow_lpid, hptep, index);
+			/* Zero second double word */
+			hptep[1] = 0ULL;
+			eieio();
+		}
+		__unlock_hpte(hptep, v);
+		preempt_enable();
+	}
 }
 
 /*
@@ -1252,7 +1313,7 @@ void kvmhv_invalidate_nest_rmap_range(struct kvm *kvm,
 	gfn = (gpa >> PAGE_SHIFT) - memslot->base_gfn;
 	end_gfn = gfn + (nbytes >> PAGE_SHIFT);
 
-	addr_mask = PTE_RPN_MASK & ~(nbytes - 1);
+	addr_mask = HPTE_R_RPN_3_0 & ~(nbytes - 1);
 	hpa &= addr_mask;
 
 	for (; gfn < end_gfn; gfn++) {
