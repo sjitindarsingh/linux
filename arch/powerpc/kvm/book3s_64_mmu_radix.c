@@ -1188,6 +1188,8 @@ static int debugfs_radix_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+#define HPTE_SIZE      (2 * sizeof(unsigned long))
+
 static ssize_t debugfs_radix_read(struct file *file, char __user *buf,
 				 size_t len, loff_t *ppos)
 {
@@ -1197,6 +1199,7 @@ static ssize_t debugfs_radix_read(struct file *file, char __user *buf,
 	struct kvm *kvm;
 	unsigned long gpa;
 	pgd_t *pgt;
+	struct kvm_hpt_info *hpt;
 	struct kvm_nested_guest *nested;
 	pgd_t pgd, *pgdp;
 	pud_t pud, *pudp;
@@ -1234,84 +1237,126 @@ static ssize_t debugfs_radix_read(struct file *file, char __user *buf,
 	gpa = p->gpa;
 	nested = NULL;
 	pgt = NULL;
+	hpt = NULL;
 	while (len != 0 && p->lpid >= 0) {
-		if (gpa >= RADIX_PGTABLE_RANGE) {
+		if (!pgt && !hpt) {
+			if (p->lpid == 0) {
+				pgt = kvm->arch.pgtable;
+			} else {
+				nested = kvmhv_get_nested(kvm, p->lpid, false);
+				if (!nested) {
+					p->lpid = kvmhv_nested_next_lpid(kvm,
+							p->lpid);
+					continue;
+				}
+				if (nested->radix)
+					pgt = nested->shadow_pgtable;
+				else
+					hpt = &nested->shadow_hpt;
+			}
+		}
+		if ((pgt && (gpa >= RADIX_PGTABLE_RANGE)) || (hpt &&
+					(gpa >= kvmppc_hpt_npte(hpt)))) {
 			gpa = 0;
 			pgt = NULL;
+			hpt = NULL;
 			if (nested) {
 				kvmhv_put_nested(nested);
 				nested = NULL;
 			}
 			p->lpid = kvmhv_nested_next_lpid(kvm, p->lpid);
 			p->hdr = 0;
-			if (p->lpid < 0)
-				break;
-		}
-		if (!pgt) {
-			if (p->lpid == 0) {
-				pgt = kvm->arch.pgtable;
-			} else {
-				nested = kvmhv_get_nested(kvm, p->lpid, false);
-				if (!nested) {
-					gpa = RADIX_PGTABLE_RANGE;
-					continue;
-				}
-				pgt = nested->shadow_pgtable;
-			}
+			continue;
 		}
 		n = 0;
 		if (!p->hdr) {
 			if (p->lpid > 0)
 				n = scnprintf(p->buf, sizeof(p->buf),
-					      "\nNested LPID %d: ", p->lpid);
-			n += scnprintf(p->buf + n, sizeof(p->buf) - n,
-				      "pgdir: %lx\n", (unsigned long)pgt);
+					      "\nNested LPID %d: \n", p->lpid);
+			if (pgt)
+				n += scnprintf(p->buf + n, sizeof(p->buf) - n,
+					      "RADIX:\npgdir: %lx\n",
+					      (unsigned long)pgt);
+			else
+				n += scnprintf(p->buf + n, sizeof(p->buf) - n,
+					       "HASH:\nnpte: %lx\n",
+					       kvmppc_hpt_npte(hpt));
 			p->hdr = 1;
 			goto copy;
 		}
 
-		pgdp = pgt + pgd_index(gpa);
-		pgd = READ_ONCE(*pgdp);
-		if (!(pgd_val(pgd) & _PAGE_PRESENT)) {
-			gpa = (gpa & PGDIR_MASK) + PGDIR_SIZE;
-			continue;
-		}
+		if (pgt) {
+			pgdp = pgt + pgd_index(gpa);
+			pgd = READ_ONCE(*pgdp);
+			if (!(pgd_val(pgd) & _PAGE_PRESENT)) {
+				gpa = (gpa & PGDIR_MASK) + PGDIR_SIZE;
+				continue;
+			}
 
-		pudp = pud_offset(&pgd, gpa);
-		pud = READ_ONCE(*pudp);
-		if (!(pud_val(pud) & _PAGE_PRESENT)) {
-			gpa = (gpa & PUD_MASK) + PUD_SIZE;
-			continue;
-		}
-		if (pud_val(pud) & _PAGE_PTE) {
-			pte = pud_val(pud);
-			shift = PUD_SHIFT;
-			goto leaf;
-		}
+			pudp = pud_offset(&pgd, gpa);
+			pud = READ_ONCE(*pudp);
+			if (!(pud_val(pud) & _PAGE_PRESENT)) {
+				gpa = (gpa & PUD_MASK) + PUD_SIZE;
+				continue;
+			}
+			if (pud_val(pud) & _PAGE_PTE) {
+				pte = pud_val(pud);
+				shift = PUD_SHIFT;
+				goto leaf;
+			}
 
-		pmdp = pmd_offset(&pud, gpa);
-		pmd = READ_ONCE(*pmdp);
-		if (!(pmd_val(pmd) & _PAGE_PRESENT)) {
-			gpa = (gpa & PMD_MASK) + PMD_SIZE;
-			continue;
-		}
-		if (pmd_val(pmd) & _PAGE_PTE) {
-			pte = pmd_val(pmd);
-			shift = PMD_SHIFT;
-			goto leaf;
-		}
+			pmdp = pmd_offset(&pud, gpa);
+			pmd = READ_ONCE(*pmdp);
+			if (!(pmd_val(pmd) & _PAGE_PRESENT)) {
+				gpa = (gpa & PMD_MASK) + PMD_SIZE;
+				continue;
+			}
+			if (pmd_val(pmd) & _PAGE_PTE) {
+				pte = pmd_val(pmd);
+				shift = PMD_SHIFT;
+				goto leaf;
+			}
 
-		ptep = pte_offset_kernel(&pmd, gpa);
-		pte = pte_val(READ_ONCE(*ptep));
-		if (!(pte & _PAGE_PRESENT)) {
-			gpa += PAGE_SIZE;
-			continue;
-		}
-		shift = PAGE_SHIFT;
-	leaf:
-		n = scnprintf(p->buf, sizeof(p->buf),
+			ptep = pte_offset_kernel(&pmd, gpa);
+			pte = pte_val(READ_ONCE(*ptep));
+			if (!(pte & _PAGE_PRESENT)) {
+				gpa += PAGE_SIZE;
+				continue;
+			}
+			shift = PAGE_SHIFT;
+		leaf:
+			n = scnprintf(p->buf, sizeof(p->buf),
 			      " %lx: %lx %d\n", gpa, pte, shift);
-		gpa += 1ul << shift;
+			gpa += 1ul << shift;
+		} else { /* hpt */
+			__be64 *hptp = (__be64 *)(hpt->virt + (gpa * HPTE_SIZE));
+			unsigned long v, hr, gr;
+
+			if (!(be64_to_cpu(hptp[0]) & (HPTE_V_VALID |
+							HPTE_V_ABSENT))) {
+				gpa++;
+				continue;
+			}
+			/* lock the HPTE so it's stable and read it */
+			preempt_disable();
+			while (!try_lock_hpte(hptp, HPTE_V_HVLOCK))
+				cpu_relax();
+			v = be64_to_cpu(hptp[0]) & ~HPTE_V_HVLOCK;
+			hr = be64_to_cpu(hptp[1]);
+			gr = hpt->rev[gpa].guest_rpte;
+			unlock_hpte(hptp, v);
+			preempt_enable();
+
+			if (!(v & (HPTE_V_VALID | HPTE_V_ABSENT))) {
+				gpa++;
+				continue;
+			}
+
+			n = scnprintf(p->buf, sizeof(p->buf),
+				      "%6lx %.16lx %.16lx %.16lx\n",
+				      gpa, v, hr, gr);
+			gpa++;
+		}
 	copy:
 		p->chars_left = n;
 		if (n > len)
