@@ -327,7 +327,6 @@ long kvmhv_enter_nested_guest(struct kvm_vcpu *vcpu)
 					       (l2_hv.lpcr & LPCR_VPM1))
 			return H_PARAMETER;
 	} else {
-		return H_PARAMETER;
 		/* must be at least V2 to support hpt guest */
 		if (l2_hv.version < 2)
 			return H_PARAMETER;
